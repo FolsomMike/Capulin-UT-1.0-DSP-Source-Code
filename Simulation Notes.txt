@@ -1,0 +1,64 @@
+
+
+Gate 0 Entry (Interface Gate)
+
+0x0000	(id)
+0x0021	(flags) (active, look for signal crossing)
+0x0000	(start MSB)
+0x0003	(start LSB)
+0x0000	(adjusted start)
+0x0006	(width)
+0x0005	(height)
+
+Gate 1 Entry (set up as Wall gate 1)
+
+0x0001	(id)
+0x0069	(flags)(active, wall 1, signal crossing, uses tracking)
+0x0000	(start MSB)
+0x0004	(start LSB)
+0x0000	(adjusted start)
+0x0009	(width)
+0x0003	(height)
+
+Gate 2 Entry (set up as Wall gate 2)
+
+0x0002	(id)
+0x00f1	(flags)(active, wall 2, signal crossing, uses tracking, find peak)
+0xffff	(start MSB)
+0xfffe	(start LSB)
+0x0000	(adjusted start)
+0x0007	(width)
+0x0006	(height)
+
+
+	; Bit assignments for the Gate Function flags:
+	;
+	; bit 0 :	0 = gate is inactive
+	; 			1 = gate is active
+	; bit 1 :	0 = flag if signal greater than gate (max gate)
+	; 			1 = flag if signal less than gate (min gate)
+	; bit 2 :	0 = no secondary flag
+	;			1 = secondary flag if signal does NOT exceed gate
+	;				(useful for loss of interface or backwall detection)
+	; bit 3:	0 = not used for wall measurement
+	;			1 = used as first gate for wall measurement
+	; bit 4:	0 = not used for wall measurement
+	;			1 = used as second gate for wall measurement
+	; bit 5:	0 = do not search for signal crossing
+	;			1 = search for signal crossing
+	;				(must be set if gate is interface or bits 3 or 4 set)
+	; bit 6:	0 = gate does not use interface tracking
+	;			1 = gate uses interface tracking
+	;				(interface gate itself must NOT use tracking)
+	; bit 7:	0 = do not search for a peak
+	;			1 = search for a peak
+	;
+
+
+	; word 0: first gate ID number (first gate is always interface gate)
+	; word 1: gate function flags (see below)
+	; word 2: gate start location MSB
+	; word 3: gate start location LSB
+	; word 4: gate adjusted start location
+	; word 5: gate width
+	; word 6: gate height
