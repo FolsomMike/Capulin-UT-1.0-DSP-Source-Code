@@ -13,18 +13,28 @@
 *	Instructions
 *	============
 *
+* IMPORTANT NOTE
 *
+* When creating a new project in Code Composer, when choosing the folder
+* Code Composer may create a new folder inside the existing one containing
+* the source code files.  This can cause problems so make sure this doesn't
+* happen.  It is usually caused when the project name matches the folder
+* name -- Code Composer will add a / to the end of the path in the
+* "Location" box.  Remove the trailing slash and the project will be stored
+* in the folder listed rather than creating a new folder inside of that one.
 *
+* Also, the first project created always gave a warning about "_c_int00"
+* being undefined.  This is required for C programs.  Subsequent projects
+* created did not have this problem.  See Git history for Capulin UT Basic,
+* tag "Removed_c_int00" to see how this was defined to solve the problem.  It
+* might have been caused by that first project having a subfolder inside the
+* source code folder as described in the previous paragraph.
 *
 ******************************************************************************
 
 	.mmregs
 
 	.include	"TMS320VC5441.asm"
-
-	.def	_c_int00	; this present just to avoid warning error from Code
-						; Composer - the warning is only valid for C code
-
 
 ;-----------------------------------------------------------------------------
 ; Miscellaneous Defines
@@ -130,8 +140,6 @@ DSP_ACKNOWLEDGE					.equ	127
 ;
 
 	.sect	"vectors"				; link this at 0xff80
-
-_c_int00:							; search this file for _c_int00 for more info
 
 	b		main
 
