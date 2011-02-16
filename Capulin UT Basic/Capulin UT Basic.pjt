@@ -2,7 +2,7 @@
 
 [Project Settings]
 ProjectName="CapulinUT"
-ProjectDir="C:\Users\Mike\Documents\6 - Controlled Documents\DSP Source Code Git Repositories\CapulinUT1-0\CapulinUT1-0\"
+ProjectDir="C:\Users\Mike\Documents\6 - Controlled Documents\DSP Source Code Git Repositories\Capulin UT Basic\Capulin UT Basic\"
 ProjectType=Executable
 CPUFamily=TMS320C54XX
 Tool="Compiler"
@@ -19,10 +19,10 @@ Source="..\TMS320VC5441.asm"
 Source="..\Capulin UT DSP.cmd"
 
 ["Compiler" Settings: "Debug"]
-Options=-g -q -al -fr"C:\Users\Mike\Documents\6 - Controlled Documents\DSP Source Code Git Repositories\CapulinUT1-0\CapulinUT1-0\Debug" -d"_DEBUG"
+Options=-g -q -al -fr"C:\Users\Mike\Documents\6 - Controlled Documents\DSP Source Code Git Repositories\Capulin UT Basic\Capulin UT Basic\Debug" -d"_DEBUG"
 
 ["Compiler" Settings: "Release"]
-Options=-q -o2 -fr"C:\Users\Mike\Documents\6 - Controlled Documents\DSP Source Code Git Repositories\CapulinUT1-0\CapulinUT1-0\Release"
+Options=-q -o2 -fr"C:\Users\Mike\Documents\6 - Controlled Documents\DSP Source Code Git Repositories\Capulin UT Basic\Capulin UT Basic\Release"
 
 ["DspBiosBuilder" Settings: "Debug"]
 Options=-v54
