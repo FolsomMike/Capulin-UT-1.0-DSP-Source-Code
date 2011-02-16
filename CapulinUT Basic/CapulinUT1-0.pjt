@@ -1,0 +1,44 @@
+; Code Composer Project File, Version 2.0 (do not modify or remove this line)
+
+[Project Settings]
+ProjectName="CapulinUT"
+ProjectDir="C:\Users\Mike\Documents\6 - Controlled Documents\DSP Source Code Git Repositories\CapulinUT1-0\CapulinUT1-0\"
+ProjectType=Executable
+CPUFamily=TMS320C54XX
+Tool="Compiler"
+Tool="CustomBuilder"
+Tool="DspBiosBuilder"
+Tool="Linker"
+Config="Debug"
+Config="Release"
+
+[Source Files]
+Source="..\Capulin UT DSP.asm"
+Source="..\Simulation Notes.txt"
+Source="..\TMS320VC5441.asm"
+Source="..\Capulin UT DSP.cmd"
+
+["Compiler" Settings: "Debug"]
+Options=-g -q -al -fr"C:\Users\Mike\Documents\6 - Controlled Documents\DSP Source Code Git Repositories\CapulinUT1-0\CapulinUT1-0\Debug" -d"_DEBUG"
+
+["Compiler" Settings: "Release"]
+Options=-q -o2 -fr"C:\Users\Mike\Documents\6 - Controlled Documents\DSP Source Code Git Repositories\CapulinUT1-0\CapulinUT1-0\Release"
+
+["DspBiosBuilder" Settings: "Debug"]
+Options=-v54
+
+["DspBiosBuilder" Settings: "Release"]
+Options=-v54
+
+["Linker" Settings: "Debug"]
+Options=-q -c -o".\Debug\CapulinUT.out" -x
+
+["Linker" Settings: "Release"]
+Options=-q -c -o".\Release\CapulinUT.out" -x
+
+["..\Simulation Notes.txt" Settings: "Debug"]
+ExcludeFromBuild=true
+
+["..\Simulation Notes.txt" Settings: "Release"]
+ExcludeFromBuild=true
+
