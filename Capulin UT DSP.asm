@@ -15,20 +15,47 @@
 *
 * IMPORTANT NOTE
 *
-* When creating a new project in Code Composer, when choosing the folder
-* Code Composer may create a new folder inside the existing one containing
-* the source code files.  This can cause problems so make sure this doesn't
-* happen.  It is usually caused when the project name matches the folder
-* name -- Code Composer will add a / to the end of the path in the
-* "Location" box.  Remove the trailing slash and the project will be stored
-* in the folder listed rather than creating a new folder inside of that one.
+* To assemble the program for use with the Capulin system, use the
+* batch files located in the root source folder, such as:
+* 	"aa Assemble Capulin UT DSP.bat"
+* These batch files create the necessary output.
 *
-* Also, the first project created always gave a warning about "_c_int00"
-* being undefined.  This is required for C programs.  Subsequent projects
-* created did not have this problem.  See Git history for Capulin UT Basic,
-* tag "Removed_c_int00" to see how this was defined to solve the problem.  It
-* might have been caused by that first project having a subfolder inside the
-* source code folder as described in the previous paragraph.
+* When creating a Code Composer project, the root source folder should
+* be used as the project folder.  The root folder is the folder containing
+* all the source code and the assemble batch file mentioned above.  If
+* care is not taken, Composer will create another folder inside the root
+* folder which will make things more confusing.
+*
+* Use Project/New, type in the project name, then browse to the root source
+* folder for the "Location".  Composer may try to add the project name to
+* the root folder -- remove the project name from the end of the path list.
+* Double check the "Location" path to ensure that it ends with the root
+* source folder before clicking "Finish".
+* 
+* Two nearly identical .cmd files are used.  The assembler batch file uses
+* one to load the .obj file from the root source folder.  The other has a
+* name like "Capulin UT DSP - Debug - use in Code Composer.cmd" and is
+* loaded into the Composer project so that it loads the .obj file from the
+* "Debug" folder where Composer places it by default for debug mode.
+*
+* NOTE: Any changes to one .cmd file should be copied to the other.
+*
+* After creating a project, choose Project/Build Options/Linker tab/Basic
+* and set "Autoinit Model" to "No Autoinitialization" to avoid the undefined
+* warning for "_c_int00".
+*
+*
+* To debug in Composer, use Build All, then File/Load Program to load the
+* .out file from the root source directory.  Each time the project is rebuilt
+* use File/Reload Program.  After each load or reload, use Debug/Reset CPU
+* to refresh the disassembly and code windows.  Use View/Memory to view
+* the memory data.
+*
+* When installing Code Composer, you must the Code Composer Studio Setup
+* program first.  From the center column, select the C5410 Device Simulator
+* and click "Add", then "Save & Quit".  The '5410 does not fully simulate the
+* '5441, but it has most of the features.  It only simulates one core of the
+* four contained in the '5441.
 *
 ******************************************************************************
 
@@ -167,15 +194,21 @@ DSP_ACKNOWLEDGE					.equ	127
 	.bss	fpgaADSampleBufEnd,1	; end of the buffer where FPGA stores A/D samples
 	.bss	coreID,1				; ID number of the DSP core (1-4)
 	.bss	getAScanBlockPtr,1		; points to next data to send to host
-	.bss	hardwareDelay1,1		; high word of FPGa hardware delay
-	.bss	hardwareDelay0,1		; low word of FPGa hardware delay
+	.bss	hardwareDelay1,1		; high word of FPGA hardware delay
+	.bss	hardwareDelay0,1		; low word of FPGA hardware delay
 	.bss	aScanDelay,1			; delay for start of AScan
 	.bss	aScanRange,1			; range for AScan
 	.bss	aScanMin,1				; stores min values during compression
 	.bss	aScanMinLoc,1			; location of min peak
 	.bss	aScanMax,1				; stores max values during compression	
 	.bss	aScanMaxLoc,1			; location of max peak
-	.bss	trackCount, 1;			; location tracking value
+	.bss	trackCount,1;			; location tracking value
+	.bss	freeTimeCnt1,1;			; high word of free time counter
+	.bss	freeTimeCnt0,1;			; low word of free time counter
+	.bss	freeTime1,1;			; high word of free time value
+	.bss	freeTime0,1;			; low word of free time value
+
+
 
 	.bss	serialPortInBufPtr,1	; points to next position of in buffer
 	.bss	reSyncCount,1			; tracks number of times reSync required
@@ -2099,6 +2132,8 @@ $4:	b		sendACK					; send back an ACK packet
 ; accurate.  This mode is used during inspection to provide periodic
 ; updates to an AScan display.
 ;
+; NOTE: the slow mode has not yet been implemented.
+;
 ; There are two delays involved in providing an AScan - the delay set in
 ; the FPGA to delay the collection of samples and the aScanDelay which
 ; provides further delay for the beginning of the AScan data set.  The
@@ -3802,6 +3837,14 @@ $3:
 
 processSamples:
 
+	ld		freeTimeCnt1, 16, B		; load 32 bit free time counter
+	adds	freeTimeCnt0, B			;  (used to calculate the amount of free
+	sth		B, freeTime1			; store free time value for retrieval by host
+	stl		B, freeTime0
+
+	st		#00h, freeTimeCnt1		; zero the free time counter
+	st		#00h, freeTimeCnt0
+
 	; A register contains the data set count flag - mask the top bit
 	; which is always set to 1 by the FPGA
 
@@ -3815,7 +3858,8 @@ processSamples:
 	add		#1, A
 	stl		A, frameSkipErrors
 	
-$2:	add		#2, B					; increment the flag, 
+$2:	add		#2, B					; increment the flag by 2 (each DSP gets every
+									;  other frame), 
 	and		#7fffh, B				; mask the top bit,
 	stl		B, frameCountFlag		; and store it so it will be ready for
 									;  the next data set check
@@ -4073,6 +4117,9 @@ main:
 	st		#00h, frameSkipErrors
 	st		#00h, frameCountFlag
 	st		#00h, interfaceFound
+	st		#00h, heartBeat
+	st		#00h, freeTimeCnt1
+	st		#00h, freeTimeCnt0
 
 	st		#0ffffh, interfaceGateIndex	; default to no gate index set
 	st		#0ffffh, wallStartGateIndex	; default to no gate index set
@@ -4140,6 +4187,12 @@ $1:
 	add		#1, A					; see that the program is alive when using
 	stl		A, heartBeat			; the debugger
 
+	ld		freeTimeCnt1, 16, A		; load 32 bit free time counter
+	adds	freeTimeCnt0, A			;  (used to calculate the amount of free
+	add		#1, A					;	time between processing each data set
+	sth		A, freeTimeCnt1			;	this value is reset for each new data set)
+	stl		A, freeTimeCnt0
+
 	; check if FPGA has uploaded a new sample data set - the last value in
 	; the buffer will be set to non-zero if so
 
@@ -4152,7 +4205,7 @@ $1:
 
 	; debug mks - use this line for simulator to force call
 	;  !!comment the line out when not simulating!!
-	;call	processSamples	
+	;call	processSamples
 							
 	cc		processSamples, ANEQ	; process the new sample set if flag non-zero
 
