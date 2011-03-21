@@ -14,7 +14,7 @@ Config="Release"
 [Source Files]
 Source="Capulin UT DSP.asm"
 Source="TMS320VC5441.asm"
-Source="Capulin UT DSP.cmd"
+Source="Capulin UT DSP - Debug - use in Code Composer.cmd"
 
 ["Compiler" Settings: "Debug"]
 Options=-g -fr"$(Proj_dir)\Debug" -d"_DEBUG"
@@ -23,14 +23,14 @@ Options=-g -fr"$(Proj_dir)\Debug" -d"_DEBUG"
 Options=-o2 -fr"$(Proj_dir)\Release"
 
 ["Linker" Settings: "Debug"]
-Options=-c -m".\Debug\Capulin UT Basic.map" -o".\Debug\Capulin UT Basic.out" -w -x
+Options=-m".\Debug\Capulin UT Basic.map" -o".\Debug\Capulin UT Basic.out" -w -x
 
 ["Linker" Settings: "Release"]
 Options=-c -m".\Release\Capulin UT Basic.map" -o".\Release\Capulin UT Basic.out" -w -x
 
-["Capulin UT DSP.cmd" Settings: "Debug"]
+["Capulin UT DSP - Debug - use in Code Composer.cmd" Settings: "Debug"]
 LinkOrder=1
 
-["Capulin UT DSP.cmd" Settings: "Release"]
+["Capulin UT DSP - Debug - use in Code Composer.cmd" Settings: "Release"]
 LinkOrder=1
 
