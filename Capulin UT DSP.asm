@@ -85,7 +85,7 @@ PROCESSED_SAMPLE_BUFFER		.equ	0x8000	; processed data stored here
 TRANSMITTER_ACTIVE			.equ	0x0001	; transmitter active flag
 GATES_ENABLED				.equ	0x0002	; gates enabled flag
 DAC_ENABLED					.equ	0x0004	; DAC enabled flag
-ASCAN_ENABLED				.equ	0x0008	; AScan enabled flag
+ASCAN_FAST_ENABLED			.equ	0x0008	; AScan fast version enabled flag
 
 POSITIVE_HALF				.equ	0x0000
 NEGATIVE_HALF				.equ	0x0001
@@ -1851,7 +1851,7 @@ setADSampleSize:
 ; The software delay (aScanDelay) is the number of samples to skip in
 ; the collected data set before the start of an AScan dataset.  The data
 ; collection may start earlier than the AScan, so this delay value is
-; is necessary to position the AScan. See notes at the top of processAScan
+; is necessary to position the AScan. See notes at the top of processAScanFast
 ; function for more explanation of this delay value.
 ;
 ; The hardware delay should match the value set in the FPGA which specifies
@@ -1907,7 +1907,7 @@ setDelays:
 ; On entry, AR3 should be pointing to word 2 (received packet data size) of 
 ; the received packet.
 ;
-; See notes at the top of processAScan function for more explanation of this
+; See notes at the top of processAScanFast function for more explanation of this
 ; scaling value.
 ;
 
@@ -2111,27 +2111,35 @@ $4:	b		sendACK					; send back an ACK packet
 ;-----------------------------------------------------------------------------
 
 ;-----------------------------------------------------------------------------
-; processAScan
+; processAScanFast
+;
+; (see also processAScanSlow)
 ;
 ; Prepares an AScan data set in the ASCAN_BUFFER which can then be transmitted
 ; to the host.
 ;
-; There are two modes of processing - fast and slow.  The desired mode is
-; set by a message call.
+; There are two versions of processing - fast and slow.  The desired mode is
+; set by a message call. (wip mks -- this is not yet implemented)
 ;
-; The fast mode processes the entire buffer at one time but may cause
+; The fast version processes the entire buffer at one time and returns the data
+; set in large chunks as requested by the host.  This will usually cause
 ; degradation in performance of the rest of the code such as peak detection
 ; because the ASCan processing may not finish before the next transducer
 ; pulse/acquisition cycle. This mode may be used during setup when speed
 ; of the AScan display is important but the peak detection is less
 ; important.
 ;
-; The slow mode processes a small part of the buffer with each call.  This
-; mode does not interfere with timing and the peak detection code will be
-; accurate.  This mode is used during inspection to provide periodic
-; updates to an AScan display.
-;
-; NOTE: the slow mode has not yet been implemented.
+; The slow version processes a small part of the buffer with each firing and
+; data collection from the pulsers.  A small part of the buffer is then
+; returned each time the host asks for peak data. This mode does not interfere
+; with timing and the peak detection code will be accurate.  This mode is used
+; during inspection to provide periodic updates to an AScan display for
+; monitoring purposes.  If necessary, the host can use the peak data to add
+; data to the AScan buffer to show peaks on the AScan which would normally
+; have been missed because the AScan data is collected only periodically
+; over time.  Because the buffer is created from different data sets as only
+; a portion is processed with each shot, the result is not a perfect copy
+; of a single shot, but the end result is a good representation of the data.
 ;
 ; There are two delays involved in providing an AScan - the delay set in
 ; the FPGA to delay the collection of samples and the aScanDelay which
@@ -2147,17 +2155,34 @@ $4:	b		sendACK					; send back an ACK packet
 ; performed.  If aScanScale = 3, then the data is compressed by 3.  The
 ; min and max are collected from aScanScale * 2 samples, then the peaks
 ; are stored in the AScan buffer in the order in which they were found
-; in the raw data.
+; in the raw data.  By storing the peaks in the order they occur, the host
+; can redraw the data set more accurately.
+;
+; Note 1:
+;
+;  The compressed AScan buffer stores both a minimum and maximum peak for each
+;  section of compressed data from the raw buffer.  If only one peak was being
+;  kept, the aScanScale value could be used as is to scan that number of raw
+;  data values to catch the peak and the compression would be proper.  Since
+;  two buffer spaces are being used instead, twice as much data must be scanned
+;  for those two spaces to get the same compression, thus the aScanScale value
+;  is multiplied by two to obtain the proper count value.
+;  Recap using scale of 2 as an example:
+;	if one peak is stored, that peak represents represents 2 raw data points
+;	if two peaks are stored, those represent 4 raw data points
+;
 ;
 ; On entry:
 ;
 ; DP should point to Variables1 page.
 ;
 
-processAScan:
+processAScanFast:
 
-	ld		aScanScale, 1, A		; load the compression scale * 2
-	stlm	A, AR0					; store for use as an index
+	ld		aScanScale, 1, A		; load the compression scale * 2 (see header note 1)
+	stlm	A, AR0					; use to reset the raw buffer index in AR1
+									; by using:		mar		*AR1-0
+
 	ld		#PROCESSED_SAMPLE_BUFFER, A		; point to start of buffers
 	adds	aScanDelay, A					; skip samples to account for delay
 	stlm	A, AR1
@@ -2168,9 +2193,9 @@ processAScan:
 
 $1:
 
-	ld		aScanScale, 1, A		; load the compression scale * 2
-	stlm	A, AR4					; store for use as a counter
-	stlm	A, AR5					; store for use as a counter
+	ld		aScanScale, 1, A		; load the compression scale * 2 (see header note 1)
+	stlm	A, AR4					; use as a counter to catch max peaks 
+	stlm	A, AR5					; use as a counter to catch min peaks
 
 	bc		$8, AEQ					; if ratio is zero, don't adjust
 
@@ -2193,6 +2218,9 @@ $3:	banz	$2, *AR4-				; count thru number samples to compress
 
 	stl		A, aScanMax				; store the max peak
 	mar		*AR1-0					; jump back to redo samples for min peak
+
+; scan again through the data to be compressed, this time for min peak
+
 	ld		#7fffh, A				; prepare to catch min peak
 
 $4:
@@ -2236,7 +2264,7 @@ $7:
 
 	.newblock						; allow re-use of $ variables
 
-; end of processAScan
+; end of processAScanFast
 ;-----------------------------------------------------------------------------
 
 ;-----------------------------------------------------------------------------
@@ -3937,8 +3965,9 @@ $1:
 
 	call	disableSerialTransmitter	; call this often
 
-	bitf	flags1, #ASCAN_ENABLED		; process AScan if enabled
-	cc		processAScan, TC			
+	bitf	flags1, #ASCAN_FAST_ENABLED	; process AScan fast if enabled
+	cc		processAScanFast, TC		; (this will cause framesets to be skipped
+										;  due to the extensive processing required)
 
 	call	disableSerialTransmitter	; call this often
 
