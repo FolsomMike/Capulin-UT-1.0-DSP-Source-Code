@@ -197,7 +197,7 @@ DSP_ACKNOWLEDGE					.equ	127
 	.bss	hardwareDelay1,1		; high word of FPGA hardware delay
 	.bss	hardwareDelay0,1		; low word of FPGA hardware delay
 	.bss	aScanDelay,1			; delay for start of AScan
-	.bss	aScanRange,1			; range for AScan
+	.bss	aScanScale,1			; compression scale for AScan
 	.bss	aScanMin,1				; stores min values during compression
 	.bss	aScanMinLoc,1			; location of min peak
 	.bss	aScanMax,1				; stores max values during compression	
@@ -1138,7 +1138,7 @@ $1:	ldu		*AR3+%, A				; reload core ID from packet
 	bc		setDelays, BEQ						
 
 	sub		#DSP_SET_ASCAN_RANGE, 0, A, B		
-	bc		setAScanRange, BEQ					
+	bc		setAScanScale, BEQ					
 
 	sub		#DSP_SET_GATE, 0, A, B				
 	bc		setGate, BEQ						
@@ -1346,7 +1346,7 @@ sendPacket:
 ;
 ; Packet structure:
 ;
-; byte 0 : current aScanRange (the scale of the compressed data)
+; byte 0 : current aScanScale (the scale of the compressed data)
 ; byte 1 : MSB of position where interface exceeds the interface gate
 ; byte 2 : LSB of above
 ; bytes 3 - 102 : AScan data
@@ -1365,8 +1365,8 @@ getAScanBlock:
 
 	stm		#SERIAL_PORT_XMT_BUFFER+6, AR3	; point to first data word after header
 
-	ld		aScanRange, A					; get the current AScan scaling ratio
-	stl		A, *AR3+						; first byte of packet
+	ld		aScanScale, A				; store the current AScan scaling ratio
+	stl		A, *AR3+					; in first byte of packet
 
 	stm		#gateResultsBuffer+8,AR2	; point to the entry of gate 0 (the
 										; interface gate) which holds the buffer
@@ -1432,9 +1432,8 @@ getAScanNextBlock:
 
 	stm		#SERIAL_PORT_XMT_BUFFER+6, AR3	; point to first data word after header
 
-	ld		aScanRange, A				; get the current AScan scaling ratio
-
-	stl		A, *AR3+					; first byte of packet
+	ld		aScanScale, A				; store the current AScan scaling ratio
+	stl		A, *AR3+					; in first byte of packet
 
 	stm		#gateResultsBuffer+8,AR2	; point to the entry of gate 0 (the
 										; interface gate) which holds the buffer
@@ -1898,21 +1897,21 @@ setDelays:
 ;-----------------------------------------------------------------------------
 
 ;-----------------------------------------------------------------------------
-; setAScanRange
+; setAScanScale
 ;
-; Sets the range for the AScan data set.  This number is actually a
-; compression ratio that determines the number of samples to be compressed
-; into the AScan data set.  For example, a range of 3 means three samples
+; Sets the compression scale for the AScan data set.  This number is actually
+; a compression ratio that determines the number of samples to be compressed
+; into the AScan data set.  For example, a scale of 3 means three samples
 ; are to be compressed into every data point in the AScan set.
 ;
 ; On entry, AR3 should be pointing to word 2 (received packet data size) of 
 ; the received packet.
 ;
 ; See notes at the top of processAScan function for more explanation of this
-; range value.
+; scaling value.
 ;
 
-setAScanRange:
+setAScanScale:
 
 	mar		*AR3+%					; skip past the packet size byte
 
@@ -1921,14 +1920,14 @@ setAScanRange:
 
 	ld		#Variables1, DP
 
-	stl		A, aScanRange			; number of samples to compress for
+	stl		A, aScanScale			; number of samples to compress for
 									; each AScan data point
 
 	b		sendACK					; send back an ACK packet
 
 	.newblock						; allow re-use of $ variables
 
-; end of setAScanRange
+; end of setAScanScale
 ;-----------------------------------------------------------------------------
 
 ;-----------------------------------------------------------------------------
@@ -2144,9 +2143,9 @@ $4:	b		sendACK					; send back an ACK packet
 ; sample delay and the aScanDelay.
 ;
 ; To fit larger sample ranges into the buffer, the data is compressed by
-; the scale factor in aScanRange.  If aScanRange = 1, no compression is
-; performed.  If aScanRange = 3, then the data is compressed by 3.  The
-; min and max are collected from aScanRange * 2 samples, then the peaks
+; the scale factor in aScanScale.  If aScanScale = 0 or 1, no compression is
+; performed.  If aScanScale = 3, then the data is compressed by 3.  The
+; min and max are collected from aScanScale * 2 samples, then the peaks
 ; are stored in the AScan buffer in the order in which they were found
 ; in the raw data.
 ;
@@ -2157,7 +2156,7 @@ $4:	b		sendACK					; send back an ACK packet
 
 processAScan:
 
-	ld		aScanRange, 1, A		; load the range compression scale * 2
+	ld		aScanScale, 1, A		; load the compression scale * 2
 	stlm	A, AR0					; store for use as an index
 	ld		#PROCESSED_SAMPLE_BUFFER, A		; point to start of buffers
 	adds	aScanDelay, A					; skip samples to account for delay
@@ -2169,7 +2168,7 @@ processAScan:
 
 $1:
 
-	ld		aScanRange, 1, A		; load the range compression scale * 2
+	ld		aScanScale, 1, A		; load the compression scale * 2
 	stlm	A, AR4					; store for use as a counter
 	stlm	A, AR5					; store for use as a counter
 
@@ -4111,7 +4110,7 @@ main:
 	st		#00h, reSyncCount
 	st		#00h, hitCount
 	st		#00h, missCount
-	st		#01h, aScanRange
+	st		#01h, aScanScale
 	st		#00h, frameCount1
 	st		#00h, frameCount0
 	st		#00h, frameSkipErrors
