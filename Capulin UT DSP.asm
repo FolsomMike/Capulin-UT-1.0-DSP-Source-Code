@@ -86,6 +86,7 @@ TRANSMITTER_ACTIVE			.equ	0x0001	; transmitter active flag
 GATES_ENABLED				.equ	0x0002	; gates enabled flag
 DAC_ENABLED					.equ	0x0004	; DAC enabled flag
 ASCAN_FAST_ENABLED			.equ	0x0008	; AScan fast version enabled flag
+ASCAN_SLOW_ENABLED			.equ	0x0010	; AScan slow version enabled flag
 
 POSITIVE_HALF				.equ	0x0000
 NEGATIVE_HALF				.equ	0x0001
@@ -194,21 +195,30 @@ DSP_ACKNOWLEDGE					.equ	127
 	.bss	fpgaADSampleBufEnd,1	; end of the buffer where FPGA stores A/D samples
 	.bss	coreID,1				; ID number of the DSP core (1-4)
 	.bss	getAScanBlockPtr,1		; points to next data to send to host
+	.bss	getAScanBlockSize,1		; number of AScan words to transfer per packet
 	.bss	hardwareDelay1,1		; high word of FPGA hardware delay
 	.bss	hardwareDelay0,1		; low word of FPGA hardware delay
 	.bss	aScanDelay,1			; delay for start of AScan
 	.bss	aScanScale,1			; compression scale for AScan
+	.bss	aScanChunk,1			; number of input points to scan for each output point
+	.bss	aScanSlowBatchSize,1	; number of output data words to process in each batch
 	.bss	aScanMin,1				; stores min values during compression
 	.bss	aScanMinLoc,1			; location of min peak
 	.bss	aScanMax,1				; stores max values during compression	
 	.bss	aScanMaxLoc,1			; location of max peak
-	.bss	trackCount,1;			; location tracking value
-	.bss	freeTimeCnt1,1;			; high word of free time counter
-	.bss	freeTimeCnt0,1;			; low word of free time counter
-	.bss	freeTime1,1;			; high word of free time value
-	.bss	freeTime0,1;			; low word of free time value
+	.bss	trackCount,1			; location tracking value
+	.bss	freeTimeCnt1,1			; high word of free time counter
+	.bss	freeTimeCnt0,1			; low word of free time counter
+	.bss	freeTime1,1				; high word of free time value
+	.bss	freeTime0,1				; low word of free time value
 
+; the next block is used by the function processAScanSlow for variable storage
 
+	.bss	inBufferPASS,1			; pointer to data in input buffer
+	.bss	outBufferPASS,1			; pointer to data in output buffer
+	.bss	totalCountPASS,1		; counts total number of output data points
+
+; end of PASS variables
 
 	.bss	serialPortInBufPtr,1	; points to next position of in buffer
 	.bss	reSyncCount,1			; tracks number of times reSync required
@@ -1341,10 +1351,14 @@ sendPacket:
 ;-----------------------------------------------------------------------------
 ; getAScanBlock
 ;
-; Returns the first 50 words of the AScan data buffer.  The words are
-; sent as 100 bytes on the serial port, MSB first.
+; Returns the first block of words of the AScan data buffer.  The words are
+; sent as bytes on the serial port, MSB first.  The number of words to be
+; transferred is specified in the requesting packet as the block size.
 ;
-; Packet structure:
+; The number of words should be one less than the amount to be transferred:
+;   i.e. a value of 49 returns 50 words which is 100 bytes.
+;
+; Outgoing packet structure:
 ;
 ; byte 0 : current aScanScale (the scale of the compressed data)
 ; byte 1 : MSB of position where interface exceeds the interface gate
@@ -1357,11 +1371,25 @@ sendPacket:
 ; 
 ; On exit the current pointer is stored so the subsequent blocks can be
 ; retrieved using the getAScanNextBlock function.
+; The block size is also saved so it can be used by getAScanNextBlock.
 ;
 
 getAScanBlock:
 
 	ld		#Variables1, DP
+
+	mar		*AR3+%					; skip past the packet size byte
+	ld		*AR3+%, 8, A			; get high byte
+	adds	*AR3+%, A				; add in low byte
+	stl		A, getAScanBlockSize	; number of data words to return with
+									; each packet
+
+;wip mks
+; remove this after Rabbit code changed to send block size -- code above
+; already in place to retrieve this from the request packet
+	ld 		#49, A
+	stl		A, getAScanBlockSize
+;end wip mks
 
 	stm		#SERIAL_PORT_XMT_BUFFER+6, AR3	; point to first data word after header
 
@@ -1387,7 +1415,8 @@ getAScanBlock:
 
 	stm		#ASCAN_BUFFER, AR2		; point to processed data buffer
 
-	stm		#49, AR1				; number of samples for transfer - 1
+	ld		getAScanBlockSize, A	; get number of words to transfer
+	stlm	A, AR1
 																			
 $1:
 	ld		*AR2+, A				; get next sample
@@ -1399,8 +1428,12 @@ $1:
 	
 	ldm		AR2, A					; save the buffer pointer so it can be used
 	stl		A, getAScanBlockPtr		; in subsequent calls to getAScanNextBlock
-	
-	ld		#103, A					; size of data in buffer
+
+	ld		getAScanBlockSize, 1, A ; load block word size, shift to multiply by two
+									; to calculate number of bytes
+	add		#5, A					; one more word (two more bytes) actually
+									; transferred so add 2, three more bytes
+									; are added to the packet as well so add 3 more
 
 	ld		#DSP_GET_ASCAN_BLOCK_CMD, B	; load message ID into B before calling
 		
@@ -1415,8 +1448,8 @@ $1:
 ;-----------------------------------------------------------------------------
 ; getAScanNextBlock
 ;
-; Returns the next 50 words of the AScan data buffer.  The words are
-; sent as 100 bytes on the serial port, MSB first.
+; Returns the next block of words of the AScan data buffer.  The words are
+; sent as bytes on the serial port, MSB first.
 ;
 ; NOTE: getAScanBlock should be called prior to this function.
 ;
@@ -1455,7 +1488,8 @@ getAScanNextBlock:
 	ld		getAScanBlockPtr, A 	; get the packet data pointer
 	stlm	A, AR2
 
-	stm		#49, AR1				; number of samples for transfer - 1
+	ld		getAScanBlockSize, A	; get number of words to transfer
+	stlm	A, AR1
 																			
 $1:
 	ld		*AR2+, A				; get next sample
@@ -1467,8 +1501,12 @@ $1:
 	
 	ldm		AR2, A					; save the buffer pointer so it can be used
 	stl		A, getAScanBlockPtr		; in subsequent calls to getAScanNextBlock
-	
-	ld		#103, A					; size of data in buffer
+
+	ld		getAScanBlockSize, 1, A ; load block word size, shift to multiply by two
+									; to calculate number of bytes
+	add		#5, A					; one more word (two more bytes) actually
+									; transferred so add 2, three more bytes
+									; are added to the packet as well so add 3 more
 
 	ld		#DSP_GET_ASCAN_NEXT_BLOCK_CMD, B	; load message ID into B before calling
 		
@@ -1904,6 +1942,19 @@ setDelays:
 ; into the AScan data set.  For example, a scale of 3 means three samples
 ; are to be compressed into every data point in the AScan set.
 ;
+; The value aScanSlowBatchSize is also set -- this value sets the number of
+; output data points to be processed in each batch by the slow version of
+; the aScan processing function.  This number should be small enough so that
+; each batch can be processed while handling data from a UT shot without
+; overrunning into the following shot.  As this value is the number of output
+; (compressed) data points processed, the number of input data points = 
+; aScanSlowBatchSize * aScanScale
+;
+; This function also calls processAScanSlowInit, initializing variables so
+; that processAScanSlow can be called.  It is okay to do this even if the
+; slow function is currently filling the AScan buffer, in which case the 
+; process will be restarted using the new batch size.
+;
 ; On entry, AR3 should be pointing to word 2 (received packet data size) of 
 ; the received packet.
 ;
@@ -1915,13 +1966,28 @@ setAScanScale:
 
 	mar		*AR3+%					; skip past the packet size byte
 
-	ld		*AR3+%, 8, A			; get high byte
-	adds	*AR3+%, A				; add in low byte
-
 	ld		#Variables1, DP
+
+	ld		*AR3+%, 8, A			; get high byte of scale
+	adds	*AR3+%, A				; add in low byte
 
 	stl		A, aScanScale			; number of samples to compress for
 									; each AScan data point
+
+	ld		aScanScale, 1, A		; load the compression scale * 2 (see header note 1)
+	bc		$1, AEQ					; if ratio is zero, don't adjust
+
+	sub		#1, A					; loop counting always one less
+
+$1:	stl		A, aScanChunk			; used to count input data points
+
+	ld		*AR3+%, 8, A			; get high byte of batch size
+	adds	*AR3+%, A				; add in low byte
+
+	stl		A, aScanSlowBatchSize	; number of output samples to process in
+									; each batch for the slow processing
+
+	call	processAScanSlowInit	; init variables for slow AScan processing
 
 	b		sendACK					; send back an ACK packet
 
@@ -2118,7 +2184,7 @@ $4:	b		sendACK					; send back an ACK packet
 ; Prepares an AScan data set in the ASCAN_BUFFER which can then be transmitted
 ; to the host.
 ;
-; There are two versions of processing - fast and slow.  The desired mode is
+; There are two versions of this function - fast and slow.  The desired mode is
 ; set by a message call. (wip mks -- this is not yet implemented)
 ;
 ; The fast version processes the entire buffer at one time and returns the data
@@ -2169,8 +2235,7 @@ $4:	b		sendACK					; send back an ACK packet
 ;  is multiplied by two to obtain the proper count value.
 ;  Recap using scale of 2 as an example:
 ;	if one peak is stored, that peak represents represents 2 raw data points
-;	if two peaks are stored, those represent 4 raw data points
-;
+;	if two peaks are stored (as used here), those represent 4 raw data points
 ;
 ; On entry:
 ;
@@ -2183,7 +2248,7 @@ processAScanFast:
 	stlm	A, AR0					; use to reset the raw buffer index in AR1
 									; by using:		mar		*AR1-0
 
-	ld		#PROCESSED_SAMPLE_BUFFER, A		; point to start of buffers
+	ld		#PROCESSED_SAMPLE_BUFFER, A		; init input buffer pointer
 	adds	aScanDelay, A					; skip samples to account for delay
 	stlm	A, AR1
 
@@ -2191,16 +2256,13 @@ processAScanFast:
 
 	stm		#399, AR3				; number of samples for transfer - 1
 
+scanSlowEntry:						; function processAScanSlow uses this entry
+									; point to process a batch of data points
 $1:
 
-	ld		aScanScale, 1, A		; load the compression scale * 2 (see header note 1)
-	stlm	A, AR4					; use as a counter to catch max peaks 
+	ld		aScanChunk, A			; counts input data points per data output point
+	stlm	A, AR4					; use as a counter to catch max peaks
 	stlm	A, AR5					; use as a counter to catch min peaks
-
-	bc		$8, AEQ					; if ratio is zero, don't adjust
-
-	mar		*AR4-					; adjust down as number loops = AR* + 1
-	mar		*AR5-
 
 ; scan through the data to be compressed for max peak
 
@@ -2258,13 +2320,137 @@ $7:
 	stl		B, *AR2+
 
 
-	banz	$1, *AR3-				; loop until AScan buffer is filled
+	banz	$1, *AR3-				; loop until batch is complete
 
 	ret
 
 	.newblock						; allow re-use of $ variables
 
 ; end of processAScanFast
+;-----------------------------------------------------------------------------
+
+;-----------------------------------------------------------------------------
+; processAScanSlow
+;
+; (see also processAScanFast)
+; (see also processAScanSlowInit)
+;
+; Prepares an AScan data set in the ASCAN_BUFFER which can then be transmitted
+; to the host.
+;
+; This function performs the same operation as processAScanFast, but breaks
+; the processing into small chunks so small portions can be done with each
+; pulse fire/data collection routine.  This allows the AScan buffer to be
+; populated without missing a data set -- processAScanFast causes data sets
+; to be lost because it takes so much time.
+;
+; See header notes for processAScanFast for details.  This slower function
+; uses variables to store the states of the different pointers and counters
+; between processing each batch.  The function processAScanSlowInit should
+; be called first to set the pointers and counters up the first time.
+; Thereafter, this function will call the init to restart each time the
+; data buffer has been entirely processed.
+;
+; Warning: data may be stored a bit beyond the end of the AScan buffer
+; as the total number of points processed is checked after each batch.  The
+; number of points processed in each batch may not be an exact multiple.
+;
+; On entry:
+;
+; Before the first call, processAScanSlowInit should have been called.
+; DP should point to Variables1 page.
+;
+
+processAScanSlow:
+
+; load all the variables
+
+	ld		aScanScale, 1, A		; load the compression scale * 2 (see header note 1)
+	stlm	A, AR0					; use to reset the raw buffer index in AR1
+									; by using:		mar		*AR1-0
+
+	ld		inBufferPASS, A			; load input buffer pointer
+	stlm	A, AR1
+
+	ld		outBufferPASS, A		; load output buffer pointer
+	stlm	A, AR2
+
+	ld		totalCountPASS, A		; load total output data counter
+	stlm	A, AR6
+
+	ld		aScanSlowBatchSize, A	; load number of output points to process in one batch
+	stlm	A, AR3
+
+	call	scanSlowEntry			; call the processAScanFast function to use
+									; it to process one batch of data points
+
+	banz	$1, *AR6-				; stop when entire output buffer filled
+									; Warning: may go a bit past the buffer end
+									; because the batches process multiple points
+									; between each time the total count is checked.
+
+
+	b		processAScanSlowInit	; call init again to start over
+
+
+; save the new state of the variables
+; aScanSlowBatchSize in AR3 is not saved as it never changes
+; the compression scale is saved even though it does not change
+; since it is manipulated (multiplied by 2) by the init
+
+$1:
+
+	ldm		AR1, A				; save input buffer pointer
+	stl		A, inBufferPASS
+
+	ldm		AR2, A				; save output buffer pointer
+	stl		A, outBufferPASS
+
+	ldm		AR6, A				; load total output data counter
+	stl		A, totalCountPASS
+
+	ret
+
+	.newblock						; allow re-use of $ variables
+
+; end of processAScanSlow
+;-----------------------------------------------------------------------------
+
+;-----------------------------------------------------------------------------
+; processAScanSlowInit
+;
+; (see also processAScanFast)
+; (see also processAScanSlowInit)
+;
+; Initializes variables for processAScanSlow.  Must be called before
+; processAScanSlow is called for the first time.  Thereafter, processAScanSlow
+; will call this function itself to restart each time the data buffer is
+; completely processed.
+;
+; The variables used all have the anacronym PASS appended to their names.
+;
+; On entry:
+;
+; DP should point to Variables1 page.
+;
+
+processAScanSlowInit:
+
+	ld		#PROCESSED_SAMPLE_BUFFER, A		; init input buffer pointer
+	adds	aScanDelay, A					; skip samples to account for delay
+	stl		A, inBufferPASS
+
+	ld		#ASCAN_BUFFER, A		; init output buffer pointer
+	stl		A, outBufferPASS
+
+	ld		#399, A					; init total output data counter
+	stl		A, totalCountPASS
+
+	ret
+
+	.newblock						; allow re-use of $ variables
+
+; end of processAScanSlowInit
 ;-----------------------------------------------------------------------------
 
 ;-----------------------------------------------------------------------------
@@ -3968,6 +4154,11 @@ $1:
 	bitf	flags1, #ASCAN_FAST_ENABLED	; process AScan fast if enabled
 	cc		processAScanFast, TC		; (this will cause framesets to be skipped
 										;  due to the extensive processing required)
+										; ONLY use fast or slow version
+
+	bitf	flags1, #ASCAN_SLOW_ENABLED	; process AScan slow if enabled
+	cc		processAScanSlow, TC		; (this is safe to use during inspection)
+										; ONLY use fast or slow version
 
 	call	disableSerialTransmitter	; call this often
 
@@ -4208,6 +4399,18 @@ main:
 mainLoop:
 
 $1:	
+
+;debug mks - remove this section
+
+;	call	setAScanScale
+;	call	processAScanSlowInit
+;$2	call	processAScanSlow
+;	b		$2
+
+;debug mks
+
+
+
 
 	ld		#Variables1, DP			; point to Variables1 page
 
