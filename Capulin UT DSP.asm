@@ -2456,7 +2456,13 @@ processAScanSlowInit:
 ;-----------------------------------------------------------------------------
 ; calculateGateIntegral
 ;
-; Finds the integral of the dataset for the gate entry pointed to by AR2.
+; Finds the integral of the data bracketed by the gate which has a level
+; above the gate.  Anything below the gate level is ignored.
+;
+; NOTE: This should work for all modes -- +Half, -Half, Full, and RF since
+; only data above the gate is processed.  For most purposes, the gate should
+; be a "max" gate.
+;
 ; On entry, AR2 should point to the flags entry for the gate.  Variable
 ; scratch1 should contain the gate's index.
 ; 
@@ -2496,7 +2502,10 @@ calculateGateIntegral:
 	sub		#1, A					; Subtract 1 to account for loop behavior.
 	stlm	A, BRC
 
-	mar		*+AR2(-5)				; point back to gate function flags
+	ld		*AR2+, A				; load the gate level
+	stl		A, scratch4				; store for quick use
+
+	mar		*+AR2(-6)				; point back to gate function flags
 
 	ld 		#0h, A					; zero A in preparation for summing
 
@@ -2505,9 +2514,25 @@ calculateGateIntegral:
 
 	rptb	$3
 
-$3:	add		*AR3+, A				; sum each data point
+
+; load each data point and subtract the gate level to shift it down,
+; values which then fall below zero will be ignored -- this acts as a
+; threshold at the gate level
+
+	ld		*AR3+, B				; load each data point
+	sub		scratch4, B				; subtract an offset (use the
+									; gate level)
+
+	nop								; pipeline protection for xc
+	nop
+
+	xc		1, BGT
+	add		B, A					; sum each data point only if
+									; it is greater than zero
+		
+$3:	nop
 	
-	sfta	A, -16					; scale down the result
+	sfta	A, -2					; scale down the result
 		
 	b		storeGatePeakResult
 
@@ -4481,38 +4506,46 @@ $1:
 ;debug mks - remove this section - testing for gate integration
 
 ; setup the gate paramaters
+; this entire section must be blocked out for normal operation
+; as the gates are already set up
 
-;	ld		#0d0h, A		; gate 0 buffer
-;	stlm	A, AR2
+debug .set 0
 
-;	nop						; pipeline protection
-;	nop
+	.if 	debug
 
-;	mar		*AR2+			; skip id entry
+	ld		#0d0h, A		; gate 0 buffer
+	stlm	A, AR2
 
-;	ld		#81h, A			; gate flags -- active, flag on max, find peak
-;	stl		A, *AR2+
+	nop						; pipeline protection
+	nop
 
-;	mar		*AR2+			; skip entry
+	mar		*AR2+			; skip id entry
 
-;	ld		#8000h, A		; gate start point in time
-;	stl		A, *AR2+
+	ld		#81h, A			; gate flags -- active, flag on max, find peak
+	stl		A, *AR2+
 
-;	ld		#8000h, A		; gate start point to the input buffer
-;	stl		A, *AR2+
+	mar		*AR2+			; skip entry
 
-;	ld		#3h, A			; width of gate divided by 3
-;	stl		A, *AR2+
+	ld		#8000h, A		; gate start point in time
+	stl		A, *AR2+
 
-;	ld		#20h, A			; height of gate
-;	stl		A, *AR2+
+	ld		#8000h, A		; gate start point to the input buffer
+	stl		A, *AR2+
+
+	ld		#3h, A			; width of gate divided by 3
+	stl		A, *AR2+
+
+	ld		#50, A			; height of gate
+	stl		A, *AR2+
 
 ;point AR2 to gate 0 as expected by calculateGateIntegral
 
-;	ld 		#0d1h, A
-;	stlm	A, AR2
+	ld 		#0d1h, A
+	stlm	A, AR2
 
-;	call	calculateGateIntegral
+	call	calculateGateIntegral
+
+	.endif
 
 ;debug mks
 
