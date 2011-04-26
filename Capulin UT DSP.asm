@@ -340,7 +340,7 @@ DSP_ACKNOWLEDGE					.equ	127
 	; word 2: gate start location MSB
 	; word 3: gate start location LSB
 	; word 4: gate adjusted start location
-	; word 5: gate width
+	; word 5: gate width / 3
 	; word 6: gate level
 	; word 7: gate hit count (number of consecutive violations before flag)
 	; word 8: gate miss count (number of consecutive non-violations before flag)
@@ -2454,6 +2454,69 @@ processAScanSlowInit:
 ;-----------------------------------------------------------------------------
 
 ;-----------------------------------------------------------------------------
+; calculateGateIntegral
+;
+; Finds the integral of the dataset for the gate entry pointed to by AR2.
+; On entry, AR2 should point to the flags entry for the gate.  Variable
+; scratch1 should contain the gate's index.
+; 
+; The integral is stored in the gate's peak results entry in gateResultBuffer.
+;
+; NOTE: If the signal equals the gate level, it is considered to exceed it.
+;
+; If the gate is a "max" gate, the signal must go higher than the gate's
+; height.  If it is a "min" gate, the signal must go lower.
+;
+; If the peak is higher than the gate level, the gate's hit counter value
+; in the results buffer is incremented.  If the hit count value reaches
+; the hitCount setting, the appropriate bit is set in the gate's results
+; flags.
+;
+; NOTE: The "adjusted start location" for the gate should be calculated
+; before calling this function.
+;
+
+calculateGateIntegral:
+									; AR2 already point to the gate's paramaters
+	mar		*AR2+					; skip the flags
+	mar		*AR2+					; skip the MSB raw start location
+	mar		*AR2+					; skip the LSB
+
+	ldu		*AR2+, A				; set AR3 to adjusted start location of the gate
+	stlm	A, AR3
+	stlm	A, AR4					; AR4 is passed to storeGatePeakResult as the
+									; buffer location of the peak -- not useful for
+									; the integral so set to the start of the gate
+
+	ld		*AR2, A					; Set block repeat counter to the gate width.
+	add		*AR2, A					; Value in param list is 1/3 the true width.
+	add		*AR2+, A				; Add three times to get true width.
+									; There may be slight round off error here,
+									; but shouldn't have significant effect.
+	sub		#1, A					; Subtract 1 to account for loop behavior.
+	stlm	A, BRC
+
+	mar		*+AR2(-5)				; point back to gate function flags
+
+	ld 		#0h, A					; zero A in preparation for summing
+
+; same integration code used for any signal mode, +half, -half, Full, RF
+; the result will vary depending on the mode
+
+	rptb	$3
+
+$3:	add		*AR3+, A				; sum each data point
+	
+	sfta	A, -16					; scale down the result
+		
+	b		storeGatePeakResult
+
+	.newblock						; allow re-use of $ variables
+
+; end of calculateGateIntegral
+;-----------------------------------------------------------------------------
+
+;-----------------------------------------------------------------------------
 ; findGatePeak
 ;
 ; Finds the peak value and its location for the gate entry pointed to by AR2.
@@ -2487,15 +2550,16 @@ findGatePeak:
 	stm		#3, AR0					; look at every third sample
 									; (AR0 is used to increment sample pointer)
 
+									; AR2 already point to the gate's paramaters
 	mar		*AR2+					; skip the flags
 	mar		*AR2+					; skip the MSB raw start location
 	mar		*AR2+					; skip the LSB
 
-	ldu		*AR2+, A				; set AR3 to adjusted start location
+	ldu		*AR2+, A				; set AR3 to adjusted start location of the gate
 	stlm	A, AR3
 
 	ld		*AR2+, A				; set block repeat counter to the
-	sub		#1, A					; gate width, subtract 1 to account
+	sub		#1, A					; gate width / 3, subtract 1 to account
 	stlm	A, BRC					; for loop behavior
 
 	mar     *+AR3(2)				; start with third sample
@@ -2624,7 +2688,7 @@ $4:	ld		*AR3+0, B				; get next sample
 	mar		*+AR4(-2)				; AR4 points 3 points ahead of the peak
 									; adjust to point to one after as this
 									; is expected on exit
-	mvmm	AR4, AR3				; get buffer address of peak
+	mvmm	AR4, AR3				; buffer address of peak -> AR3
 	mar		*+AR3(-3)				; move back to first of skipped samples
 									; just before the found peak
 
@@ -2706,7 +2770,7 @@ $3:
 $4:
 
 ; since the peak signal exceeded the gate, clear the "not exceeded" count
-; and increment the "exceeded count"
+; and increment the "exceeded" count
 
 	ld		*+AR2(+1), A			; load hit count threshold from gate info
 	stl		A, hitCount				; and store it
@@ -2714,11 +2778,11 @@ $4:
 	call	pointToGateResults		; point to the entry for gate in scratch1
 	pshm	AR2						; save the pointer
 
-	mar		*+AR2(3)				; move to "exceeded" count
+	mar		*+AR2(3)				; move to "not exceeded" count
 
 	st		#0,*AR2-				; clear the "not exceeded" count
 
-	ld		*AR2, A					; increment the "exceeded count"
+	ld		*AR2, A					; increment the "exceeded" count
 	add		#1, A
 	stl		A, *AR2
 	
@@ -2747,16 +2811,16 @@ handleNoPeakCrossing:
 
 	mar		*+AR2(2)				; move to "exceeded" count
 
-	; since the signal exceeded the gate, clear the "not exceeded" count
-	; and increment the "exceeded count"
+	; since the signal did not exceed the gate, clear the "exceeded" count
+	; and increment the "not exceeded" count
 
 	st		#0,*AR2+				; clear the "exceeded" count
 
-	ld		*AR2, A					; increment the "not exceeded count"
+	ld		*AR2, A					; increment the "not exceeded" count
 	add		#1, A
 	stl		A, *AR2
 	
-	sub		missCount, A			; see if number of consecutive hits
+	sub		missCount, A			; see if number of consecutive misses
 	bc		$2, ALT					; >= preset limit - skip if not
 
 	st		#0,*AR2-				; clear the "not exceeded" count	
@@ -2764,7 +2828,7 @@ handleNoPeakCrossing:
 	mar		*AR2-					; skip to the gate results flags
 	mar		*AR2-
 
-	orm		#2, *AR2				; set bit 1 - signal did not exceed gate
+	orm		#2, *AR2				; set bit 1 - signal missed the gate
 									; missCount number of times
 
 $2:	b		checkForNewPeak
@@ -2816,7 +2880,7 @@ $5:
 $6:
 
 	stl		A, *AR2+				; store the new peak in results
-	ld		AR4, A					; get the new peak's buffer address
+	ldm		AR4, A					; get the new peak's buffer address
 	stl		A, *AR2+				; store address in results
 	ld		trackCount, A			; get the tracking value for new peak
 	stl		A, *AR2+				; store tracking value in results
@@ -2878,7 +2942,7 @@ findGateCrossing:
 	stlm	A, AR3
 
 	ld		*AR2+, A				; set block repeat counter to the
-	sub		#1, A					; gate width, subtract 1 to account
+	sub		#1, A					; gate width / 3, subtract 1 to account
 	stlm	A, BRC					; for loop behavior
 
 	mar     *+AR3(2)				; start with third sample
@@ -3106,7 +3170,7 @@ findGateCrossingAfterGain:
 	stlm	A, AR3
 
 	ld		*AR2+, A				; set block repeat counter to the
-	sub		#1, A					; gate width, subtract 1 to account
+	sub		#1, A					; gate width / 3, subtract 1 to account
 	stlm	A, BRC					; for loop behavior
 
 	ld		softwareGain, A			; get the global gain value
@@ -3693,7 +3757,7 @@ $2:	ldm		AR5, A					; use loop count as gate index
 	stlm	A, AR4
 
 	ld		*AR2+, A				; set block repeat counter to the
-	sub		#1, A					; gate width, subtract 1 to account
+	sub		#1, A					; gate width / 3, subtract 1 to account
 	stlm	A, BRC					; for loop behavior
 
 	; see notes in header of setSoftwareGain function for details on -9 shift
@@ -3811,8 +3875,13 @@ $4:	bitf	*AR2, #GATE_FOR_FLAW	; find peak if flaw gate
 	bc		$8, NTC
 
 	pshm	AR2						; save gate info pointer
-	call	findGatePeak			; if gate and peak function are enabled
+;debug mks	call	findGatePeak			; if gate and peak function are enabled
 									; will record signal peak in the gate
+
+
+	call	calculateGateIntegral	;debug mks
+
+
 	popm	AR2						; restore gate info pointer
 	nop								; pipeline protection
 
@@ -4400,7 +4469,7 @@ mainLoop:
 
 $1:	
 
-;debug mks - remove this section
+;debug mks - remove this section - testing for slow AScan processing
 
 ;	call	setAScanScale
 ;	call	processAScanSlowInit
@@ -4409,6 +4478,43 @@ $1:
 
 ;debug mks
 
+;debug mks - remove this section - testing for gate integration
+
+; setup the gate paramaters
+
+;	ld		#0d0h, A		; gate 0 buffer
+;	stlm	A, AR2
+
+;	nop						; pipeline protection
+;	nop
+
+;	mar		*AR2+			; skip id entry
+
+;	ld		#81h, A			; gate flags -- active, flag on max, find peak
+;	stl		A, *AR2+
+
+;	mar		*AR2+			; skip entry
+
+;	ld		#8000h, A		; gate start point in time
+;	stl		A, *AR2+
+
+;	ld		#8000h, A		; gate start point to the input buffer
+;	stl		A, *AR2+
+
+;	ld		#3h, A			; width of gate divided by 3
+;	stl		A, *AR2+
+
+;	ld		#20h, A			; height of gate
+;	stl		A, *AR2+
+
+;point AR2 to gate 0 as expected by calculateGateIntegral
+
+;	ld 		#0d1h, A
+;	stlm	A, AR2
+
+;	call	calculateGateIntegral
+
+;debug mks
 
 
 
