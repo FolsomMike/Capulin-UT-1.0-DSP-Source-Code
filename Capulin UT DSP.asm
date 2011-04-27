@@ -378,6 +378,7 @@ DSP_ACKNOWLEDGE					.equ	127
 	;				(useful for loss of interface or backwall detection)
 	; bit 2 :	0 = flag if signal greater than gate (max gate)
 	; 			1 = flag if signal less than gate (min gate)
+	;			 (see Caution 1 below)
 	; bit 3:	0 = not used for wall measurement
 	;			1 = used as first gate for wall measurement
 	; bit 4:	0 = not used for wall measurement
@@ -390,6 +391,11 @@ DSP_ACKNOWLEDGE					.equ	127
 	;				(interface gate itself must NOT use tracking)
 	; bit 7:	0 = do not search for a peak
 	;			1 = search for a peak
+	;
+	; Caution 1: the max/min gate bit 2 matches the bit 2 position in the gate results
+	;            buffer flags so that the bit can easily be copied from the former to
+	;			 the latter before sending peak data to the host
+	;			 DO NOT MOVE unless all other code here and in the host is matched.
 	;
 
 	.bss	gateBuffer, 90
@@ -424,6 +430,7 @@ DSP_ACKNOWLEDGE					.equ	127
 	; 			1 = signal failed to exceed gate more than missCount time consecutively
 	; bit 2:	0 = max gate, higher values are worst case
 	; 			1 = min gate, lower values are worst case
+	;			 (see Caution 2 below)
 	;
 	; Notes:
 	;
@@ -443,6 +450,11 @@ DSP_ACKNOWLEDGE					.equ	127
 	; Each core processes every other transducer pulse, so a hitCount of
 	; two requires only that violations occur on shots 1 and 3 with the
 	; second and forth shot being handled by another DSP.
+	;
+	; Caution 2: the max/min gate bit 2 matches the bit 2 position in the gate
+	;            buffer flags so that the bit can easily be copied from the latter to
+	;			 the former before sending peak data to the host
+	;			 DO NOT MOVE unless all other code here and in the host is matched.
 	;
 
 	.bss	gateResultsBuffer, 120
@@ -480,6 +492,7 @@ DSP_ACKNOWLEDGE					.equ	127
 	;
 	; bit 0 :	0 = section is inactive
 	; 			1 = section is active
+	;
 
 	.bss	dacBuffer, 90
 
@@ -3966,20 +3979,22 @@ getPeakData:
 	bitf	*AR4, #GATE_ACTIVE		; check if gate enabled
 	bc		$2, TC					; bit 0 set, send gate's data			
 
-	mar		*+AR4(9)				; move to next gate info
-	mar		*+AR5(12)				; move to next gate results
+	mar		*+AR4(9)				; move to parameters for next gate
+	mar		*+AR5(12)				; move to results for next gate
 	b		$1
 
 $2:
 
-	mar		*+AR2(8)				; track 8 bytes per gate to be sent
+	mar		*+AR2(8)				; count bytes sent (8 per gate for peak data)
 
 	ldu		*AR4, A					; get the gate flags and mask for the max/min
 	and		#GATE_MAX_MIN, A		; flag so it can be transferred to the results
 									; flag so the host will know gate type
+									; it is transferred repeatedly because the results
+									; flag is zeroed each time
 			
 	adds	*AR5, A					; add the gate type flag to the results flags
-	st		#0, *AR5				; zero the flags
+	st		#0, *AR5				; zero the results flags
 
 	stl		A, -8, *AR3+			; high byte
 	stl		A, *AR3+				; low byte
