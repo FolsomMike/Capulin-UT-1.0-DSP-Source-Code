@@ -104,6 +104,11 @@ GATE_USES_TRACKING			.equ	0x0040
 GATE_FOR_FLAW				.equ	0x0080
 GATE_FOR_INTERFACE			.equ	0x0100
 
+;bit masks for gate peak data flag
+
+HIT_COUNT_MET				.equ	0x0001
+MISS_COUNT_MET				.equ	0x0002
+
 ; end of Miscellaneous Defines
 ;-----------------------------------------------------------------------------
 
@@ -250,6 +255,7 @@ DSP_ACKNOWLEDGE					.equ	127
 	.bss	scratch2,1				; scratch variable for any temporary use
 	.bss	scratch3,1				; scratch variable for any temporary use
 	.bss	scratch4,1				; scratch variable for any temporary use
+	.bss	scratch5,1				; scratch variable for any temporary use
 
 	; Wall Peak Buffer Notes
 	;
@@ -336,6 +342,7 @@ DSP_ACKNOWLEDGE					.equ	127
 	; Each gate is defined by 9 words each:
 	;
 	; word 0: first gate ID number (first gate is always interface gate)
+	;			   (upper two bits used to store pointer to next averaging buffer)
 	; word 1: gate function flags (see below)
 	; word 2: gate start location MSB
 	; word 3: gate start location LSB
@@ -363,7 +370,7 @@ DSP_ACKNOWLEDGE					.equ	127
 	; for any changes which may have been made to the variable hardwareDelay
 	; by the host.  Note that the hardwareDelay value should match the
 	; value set in the FPGA.
-	; 
+	;
 	; If interface tracking is on, the start position is based from the
 	; first point where the signal rises above the interface gate.  After
 	; each transducer pulse, the interface crossing is detected and added
@@ -391,6 +398,15 @@ DSP_ACKNOWLEDGE					.equ	127
 	;				(interface gate itself must NOT use tracking)
 	; bit 7:	0 = do not search for a peak
 	;			1 = search for a peak
+	; bit 8:	0 = this is not the interface gate
+	;			1 = this is the interface gate
+	; bit 9: 	unused
+	; bit 10:	unused
+	; bit 11:	unused
+	; bit 12:	unused
+	; bit 13:	unused
+	; bit 14:	lsb - gate data averaging buffer size
+	; bit 15:	msb - gate data averaging buffer size
 	;
 	; Caution 1: the max/min gate bit 2 matches the bit 2 position in the gate results
 	;            buffer flags so that the bit can easily be copied from the former to
@@ -424,10 +440,10 @@ DSP_ACKNOWLEDGE					.equ	127
 	;
 	; Bit assignments for the Gate Result flags:
 	;
-	; bit 0 :	0 = no signal exceeded gate
+	; bit 0 :	0 = no signal exceeded gate more than hitCount times consecutively
 	; 			1 = signal exceeded gate more than hitCount times consecutively
-	; bit 1 :	0 = signal exceeded gate adequate number of times
-	; 			1 = signal failed to exceed gate more than missCount time consecutively
+	; bit 1 :	0 = signal did not miss gate more than allowed limit
+	; 			1 = signal failed to exceed gate more than missCount times consecutively
 	; bit 2:	0 = max gate, higher values are worst case
 	; 			1 = min gate, lower values are worst case
 	;			 (see Caution 2 below)
@@ -498,6 +514,9 @@ DSP_ACKNOWLEDGE					.equ	127
 
 	.bss	stack, 99				; the stack is set up here
 	.bss	endOfStack,	1			; code sets SP here on startup
+									; NOTE: you can have plenty of stack!
+									;   The PIC micro-controller has the limited
+									;   stack space, not the C50!
 
 
 ; NOTE: Various buffers are defined at 3000h and up (see above) - be careful about
@@ -1702,6 +1721,12 @@ setSoftwareGain:
 ; A value of zero or one means one hit or miss will cause a flag. Values
 ; above that are one to one - 3 = 3 hits, 4 = 4 hits, etc.
 ;
+; Note: At first glance, it would seem that a hit count of zero would always
+; trigger setting of the flag, but the code is never reached unless a peak
+; exceeds the gate.  Thus, it functions basically the same as a value of 1.
+; Thus, the host needs to catch the special case of zero and ignore the
+; flag in that case.
+;
 ; NOTE: Each DSP core processes every other shot of its associated
 ; channel. So a hit count of 1 will actually flag if shot 1 and shot 3
 ; are consecutive hits, with shots 2 and 4 being handled by another
@@ -2496,6 +2521,10 @@ processAScanSlowInit:
 ;
 
 calculateGateIntegral:
+
+	call	averageGate				; average the sample set with the previous
+									; set(s) -- up to four sets can be averaged
+
 									; AR2 already point to the gate's paramaters
 	mar		*AR2+					; skip the flags
 	mar		*AR2+					; skip the MSB raw start location
@@ -2547,11 +2576,219 @@ $3:	nop
 	
 	sfta	A, -2					; scale down the result
 		
-	b		storeGatePeakResult
+	call	storeGatePeakResult		; store the result
+
+	b		copyToAveragingBuffer	; copy new data to oldest buffer
 
 	.newblock						; allow re-use of $ variables
 
 ; end of calculateGateIntegral
+;-----------------------------------------------------------------------------
+
+;-----------------------------------------------------------------------------
+; averageGate
+;
+; Averages the samples in the gate with the previous sets of data (up to 4
+; sets).
+;
+; The number of sets to average (buffer size) is transferred from the host
+; in the upper most two bits of the gate's flags.
+;
+; The counter tracking which buffer was filled last time is stored in the upper
+; most two bits of the gate's ID number.
+;
+; On entry, AR2 should point to the flags entry for the gate.  Variable
+; scratch1 should contain the gate's index.
+;
+; NOTE: The "adjusted start location" for the gate should be calculated
+; before calling this function.
+;
+; This function does nothing if the averaging buffer size is 0.
+;
+
+averageGate:
+
+	ldu		*AR2, A					; get the buffer size from flags -- shift to bit 0
+	sfta	A, -14
+	rc		AEQ						; do nothing if averaging buffer size is zero
+									; zero from host means no averaging
+
+									; AR2 already point to the gate's paramaters
+	mar		*AR2+					; skip the flags
+	mar		*AR2+					; skip the MSB raw start location
+	mar		*AR2+					; skip the LSB
+
+	ldu		*AR2+, A				; set AR3 to adjusted start location of the gate
+	stlm	A, AR3
+	stl		A, scratch5				; store for later use by copyToAveragingBuffer
+
+	ld		*AR2, A					; Set block repeat counter to the gate width.
+	add		*AR2, A					; Value in param list is 1/3 the true width.
+	add		*AR2+, A				; Add three times to get true width.
+									; There may be slight round off error here,
+									; but shouldn't have significant effect.
+	sub		#1, A					; Subtract 1 to account for loop behavior.
+	stlm	A, BRC
+
+
+; increment the buffer counter -- if it is equal to the number of
+; averaging buffers to be used (specified by host), then reset to
+; 1 -- the first time through the counter will be zero so that
+; buffer 1 will be used first
+
+	mar		*+AR2(-5)				; move back to the gate's flags
+	ldu		*AR2-, B				; load the flags and shift buffer size
+									; to average down to bit 0 (this number from host)
+	sfta	B, -14
+
+	ldu		*AR2, A					; load gate ID and shift buffer counter to bit 0
+	sfta	A, -14
+	
+	min		A						; is limit or counter bigger?
+
+	bc		$1, C					; if the counter is equal to the max buffer to
+									; average, reset counter to 1 
+
+	; increment counter
+
+	ldu		*AR2, A					; get the ID & buffer counter
+	add		#04000h, A				; increment counter at bit 14
+									
+	stl		A, *AR2					; save the ID with new counter
+
+	b		$2
+	
+$1:	; reset counter to 1
+
+	andm	#03fffh, *AR2			; clear the old counter in ID
+	orm		#04000h, *AR2			; set counter bits to 01, point AR2 at flags
+
+$2:
+
+; set up the pointers to each buffer -- they are 2000h apart so they could
+; hold the entire 8K data sample set if the gate(s) were that big 
+
+	ldm		AR3, A					; get adjusted gate start location
+	add		#2000h, A				; buffer 1
+	stlm	A, AR4
+	add		#2000h, A				; buffer 2
+	stlm	A, AR5
+	add		#2000h, A				; buffer 3
+	stlm	A, AR6
+
+; the summed data gets stored over the data in the oldest buffer, pointed at by
+; AR7 -- the gate's adjusted start entry gets set to this value so the following
+; processing functions will operate on that summed data
+; after processing, the new data in the 8000h buffer is copied to this oldest
+; buffer, overwriting the summed data which will not be needed any more
+
+	ld		#2000h, A				; load spacing between buffers
+	stlm	A, T					; preload T for mpya
+
+	ldu		*AR2, A					; load gate ID
+	sfta	A, 2					; shift buffer counter up to upper of A for mpya
+
+	mpya	A						; multiply A(bits 32-16) x T -> B
+
+	ldm		AR3, B					; get adjusted gate start location
+
+	add		B, A					; add buffer offset to location in the 8000h buffer
+									; where the gate's adjusted start location points at
+									; this will now point to the gate's mirror location in
+									; the current averaging history buffer
+
+	stlm	A, AR7					; use AR7 to track result buffer
+	mar		*+AR2(+4)				; move to adjusted gate start
+	stl		A, *AR2					; following processing functions will
+									; now work on data at this location
+
+	mar		*+AR2(-3)				; move back to gate flags
+
+	rptb	$4
+
+; add the values from all the buffers together
+; if a buffer isn't being used, it will have zeroes and won't affect the
+; sum -- this is the simplest way to do it at the time
+; all buffers need to be zeroed on program start
+
+	ld		*AR3+, A				; sum each data point from all 4 buffers
+	add		*AR4+, A
+	add		*AR5+, A		
+	add		*AR6+, A
+$4:	stl		A, *AR7+
+	
+;	sfta	A, -2					; scale down the result
+
+	ret
+	
+	.newblock
+
+; end of averageGate
+;-----------------------------------------------------------------------------
+
+;-----------------------------------------------------------------------------
+; copyToAveragingBuffer
+;
+; This function copies data for the gate from the buffer at 8000h to the 
+; history buffer with specified by the value in the gate's adjusted start
+; location parameter. This is done so that the averageGate function can use
+; the history buffers to average the signal over time.
+;
+; On entry, variable scratch1 should contain the gate's index.
+;
+; Variable scratch5 should contain the gate's adjusted location in the
+; 8000h buffer while the gate's adjusted location parameter should contain
+; the destination buffer (this is set by the averageGate function).
+;
+; This data copy is necessary because the 4 buffers are not truly rotated.
+; Incoming data is always inserted into the 8000h buffer and then rotated
+; to one of the other three.  If the program is instead changed to dump
+; incoming data directly into the oldest data buffer then this copy will
+; no longer be necessary.
+;
+; This function does nothing if the averaging buffer size is 0.
+;
+
+copyToAveragingBuffer:
+
+	ld		scratch1, A				; get the gate index
+	call	pointToGateInfo			; point AR2 to the gate's parameter list
+
+	ldu		*AR2, A					; get the buffer size from flags -- shift to bit 0
+	sfta	A, -14
+	rc		AEQ						; do nothing if averaging buffer size is zero
+									; zero from host means no averaging
+
+
+	ldu		scratch5, A				; set AR3 to adjusted start location of the gate
+	stlm	A, AR3					;  this is the new data in the 8000h buffer
+									;  this pointer stored by function averageGate
+
+	mar		*+AR2(+3)				; move to adjusted start location in the gate's
+									; parameters -- averageGate function sets this
+									; to the buffer to be used next
+
+	ldu		*AR2+, A				; set AR3 to adjusted start location of the gate
+	stlm	A, AR4
+
+	ld		*AR2, A					; Set block repeat counter to the gate width.
+	add		*AR2, A					; Value in param list is 1/3 the true width.
+	add		*AR2+, A				; Add three times to get true width.
+									; There may be slight round off error here,
+									; but shouldn't have significant effect.
+	sub		#1, A					; Subtract 1 to account for loop behavior.
+	stlm	A, BRC
+
+	mar		*+AR2(-5)				; move back to gate flags
+
+	rptb	$1						; copy newest data to the oldest buffer
+$1:	mvdd	*AR3+, *AR4+
+
+	ret
+	
+	.newblock
+
+; end of copyToAveragingBuffer
 ;-----------------------------------------------------------------------------
 
 ;-----------------------------------------------------------------------------
@@ -2588,7 +2825,7 @@ findGatePeak:
 	stm		#3, AR0					; look at every third sample
 									; (AR0 is used to increment sample pointer)
 
-									; AR2 already point to the gate's paramaters
+									; AR2 already point to the gate's parameters
 	mar		*AR2+					; skip the flags
 	mar		*AR2+					; skip the MSB raw start location
 	mar		*AR2+					; skip the LSB
@@ -3426,7 +3663,7 @@ findInterfaceGateCrossing:
 	ld		interfaceGateIndex, A	; load interface gate index
 	call	pointToGateInfo			; point AR2 to the info for gate in A
 
-	andm	#0bfh, *AR2				; disable "interface tracking" for gate
+	andm	#0ffbfh, *AR2			; disable "interface tracking" for gate
 									; see notes above
 
 	pshm	AR2						; save gate info pointer
@@ -3861,7 +4098,7 @@ processGates:
 	stl		A, interfaceFound		; store interface found flag so other
 									; functions can use it - if an iface gate is
 									; not active, a zero will be stored which
-									; indicates an interface was found anyway
+									; indicates an interface was found
 
 	bitf	flags1, #DAC_ENABLED	; process DAC if it is enabled
 	cc		processDAC, TC
@@ -3912,23 +4149,25 @@ $3:	bitf	*AR2, #GATE_WALL_END	; find crossing if gate is used for wall end
 $4:	bitf	*AR2, #GATE_FOR_FLAW	; find peak if flaw gate
 	bc		$8, NTC
 
+	pshm	AR5						; save loop counter
 	pshm	AR2						; save gate info pointer
-;debug mks	call	findGatePeak			; if gate and peak function are enabled
+	call	findGatePeak			; if gate and peak function are enabled ;debug mks
 									; will record signal peak in the gate
 
 
-	call	calculateGateIntegral	;debug mks
+;debug mks	call	calculateGateIntegral	;debug mks
 
 
 	popm	AR2						; restore gate info pointer
+	popm	AR5						; restore loop counter
 	nop								; pipeline protection
 
 $8:	banz	$2,	*AR5-				; decrement gate index pointer
 
 
 	; if either the wall start or end gates have not been set, then exit
-	; the entries are set to ffffh and the top bit will be set unless those
-	; entries have been changed to the index of a gate
+	; the entries default to ffffh and the top bit will be set unless those
+	; entries have been changed to the index of a wall gate
 
 	bitf	wallStartGateIndex, #8000h
 	rc		TC
@@ -4494,6 +4733,12 @@ main:
 
 	call	setupDMA				; prepare DMA channel(s) for use
 
+	; clear data buffers used for averaging
+	ld		#8000h, A
+	stlm	A, AR1
+	rptz	A, #7fffh
+	stl		A, *AR1+
+
 	b		mainLoop				; start main execution loop
 
 ; end of main
@@ -4522,21 +4767,24 @@ $1:
 
 ; setup the gate paramaters
 ; this entire section must be blocked out for normal operation
-; as the gates are already set up
+; as the gates are already set up by the time this code is reached
+; and this will overwrite them
+;
+; block out by setting debug to 0
 
 debug .set 0
 
 	.if 	debug
 
-	ld		#0d0h, A		; gate 0 buffer
-	stlm	A, AR2
+	ld		#0h, A			; use gate 0 for testing
+	call	pointToGateInfo	; point AR2 to the gate's parameter list
 
-	nop						; pipeline protection
-	nop
+	mar		*AR2-			; move back to gate ID
 
-	mar		*AR2+			; skip id entry
+	ld		#99h, A			; store an ID number easily seen
+	stl		A, *AR2+		;   for debug purposes
 
-	ld		#81h, A			; gate flags -- active, flag on max, find peak
+	ld		#0c081h, A		; gate flags -- active, flag on max, find peak
 	stl		A, *AR2+
 
 	mar		*AR2+			; skip entry
@@ -4544,21 +4792,56 @@ debug .set 0
 	ld		#8000h, A		; gate start point in time
 	stl		A, *AR2+
 
-	ld		#8000h, A		; gate start point to the input buffer
+	ld		#8800h, A		; gate adjusted start point to the input buffer
 	stl		A, *AR2+
+	stl		A, scratch1		; store temporarily
 
 	ld		#3h, A			; width of gate divided by 3
 	stl		A, *AR2+
 
-	ld		#50, A			; height of gate
+	ld		#5, A			; height of gate
 	stl		A, *AR2+
 
-;point AR2 to gate 0 as expected by calculateGateIntegral
+; put sample data into the new data buffer and the 3 averaging buffers
 
-	ld 		#0d1h, A
-	stlm	A, AR2
+	ld		#9h, A			; actual width of the gate
+	sub		#1, A			; subtract 1 to account for loop behavior
+	stlm	A, BRC
+
+	ld		scratch1, A		; get the gate adjusted start location stored previously
+	stlm	A, AR3
+	add		#2000h, A		; buffer 1
+	stlm	A, AR4
+	add		#2000h, A		; buffer 2
+	stlm	A, AR5
+	add		#2000h, A		; buffer 3
+	stlm	A, AR6
+
+	ld		#1h, A
+
+	; place an ascending value in the buffers
+
+	rptb	$3
+
+	stl		A, *AR3+
+	stl		A, *AR4+
+	stl		A, *AR5+
+	stl		A, *AR6+
+	add		#1, A
+$3: nop						; rptb fails if block ends on 2 word instruction
+							;  (this may be a simulator problem only)
+
+;point AR2 to gate parameters and scratch1 to gate index as expected by
+; calculateGateIntegral (in this case use gate 0)
+
+$2:	ld		#0h, A			; use gate 0 for testing
+	call	pointToGateInfo	; point AR2 to the gate's parameter list
 
 	call	calculateGateIntegral
+
+;	call	averageGate
+
+	b		$2
 
 	.endif
 
