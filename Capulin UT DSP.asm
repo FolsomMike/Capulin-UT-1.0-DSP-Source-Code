@@ -133,18 +133,25 @@ GATE_FOR_INTERFACE				.equ	0x0100
 GATE_INTEGRATE_ABOVE_GATE		.equ	0x0200
 GATE_QUENCH_ON_OVERLIMIT		.equ	0x0400
 
-;bit masks for gate peak data flag
+;bit masks for gate results data flag
 
 HIT_COUNT_MET				.equ	0x0001
 MISS_COUNT_MET				.equ	0x0002
+GATE_EXCEEDED				.equ	0x0004
+
+;bit masks for processingFlags1
+
+IFACE_FOUND					.equ	0x0001
+START_WALL_FOUND			.equ	0x0002
+END_WALL_FOUND				.equ	0x0004
 
 ;size of buffer entries
 
 ;WARNING: Adjust these values any time you add more bytes to the buffers.
 
 GATE_PARAMS_SIZE			.equ	14
-GATE_RESULTS_SIZE			.equ	12	;debug mks -- hardcoded values need to be replaced with this constant
-DAC_PARAMS_SIZE				.equ	9   ;debug mks -- hardcoded values need to be replaced with this constant 
+GATE_RESULTS_SIZE			.equ	12
+DAC_PARAMS_SIZE				.equ	9
 
 ; end of Miscellaneous Defines
 ;-----------------------------------------------------------------------------
@@ -277,7 +284,7 @@ DSP_ACKNOWLEDGE					.equ	127
 	.bss	frameCountFlag,1		; stores previous count flag from FPGA
 
 	.bss	interfaceGateIndex,1	; index number of the interface gate if in use
-	.bss	interfaceFound,1		; set to 1 if the signal crossed the iface gate
+	.bss	processingFlags1,1		; flags used by signal processing functions
 
 	.bss	wallStartGateIndex,1	; index number of the wall start gate if used
 	.bss	wallStartGateInfo,1		; pointer to wall start gate info
@@ -3386,10 +3393,12 @@ storeGateCrossingResult:
 
 	mar		*AR2-					; skip to the gate results flags
 
-	orm		#1, *AR2				; set bit 0 - signal exceeded gate
+	orm		#HIT_COUNT_MET, *AR2	; set bit 0 - signal exceeded gate
 									; hitCount number of times
 
 $1:	ld		#0, A					; return 0 - crossing point found
+
+	orm		#GATE_EXCEEDED, *AR2	; set flag - signal exceeded the gate level
 
 	ret
 
@@ -3419,10 +3428,12 @@ handleNoCrossing:
 	mar		*AR2-					; skip to the gate results flags
 	mar		*AR2-
 
-	orm		#2, *AR2				; set bit 1 - signal did not exceed gate
+	orm		#MISS_COUNT_MET, *AR2	; set bit 1 - signal did not exceed gate
 									; missCount number of times
 
 $2:	ld		#-1, A					; return -1 as no crossing found
+
+	andm	#~GATE_EXCEEDED, *AR2	; clear flag - signal did not exceed the gate level
 
 	ret
 
@@ -3468,8 +3479,8 @@ $2:	ld		#-1, A					; return -1 as no crossing found
 ; NOTE: The "adjusted start location" for the gate should be calculated
 ; before calling this function.
 ;
-; NOTE: This function is similar to findGateCrossing.  This
-; function does not applies gain to the samples.  The use of the A & B
+; NOTE: This function is similar to findGateCrossing.  That
+; function does not apply gain to the samples.  The use of the A & B
 ; registers during the loop are opposite in the two functions because
 ; the gain version must use A to multiply the gain.  This function
 ; jumps to end code in findGateCrossing.
@@ -3679,7 +3690,9 @@ pointToGateResults:
 ; Calculates the adjusted gate start location and then calls findGateCrossing
 ; to find the location where the signal exceeds the gate's level.
 ;
-; On return, A = 0 if crossing found, -1 if no crossing found.
+; On return:
+;  crossing found: A = 0 and IFACE_FOUND flag set in processingFlags1
+;  no crossing found: A = -1 and IFACE_FOUND flag cleared in processingFlags1
 ;
 ; DP should point to Variables1 page.
 ;
@@ -3714,6 +3727,13 @@ findInterfaceGateCrossing:
 	popm	AR2						; restore gate info pointer
 
 	call	findGateCrossingAfterGain	; find where signal crosses above gate
+
+	andm	#~IFACE_FOUND, processingFlags1 ; clear the found flag
+
+	xc		2, AEQ							; if A returned 0 from function call,
+											; set the found flag
+
+	orm		#IFACE_FOUND, processingFlags1
 
 	ret
 
@@ -4135,13 +4155,14 @@ processGates:
 
 	ld		#0, A					; preload A with interface found flag
 
+	orm		#IFACE_FOUND, processingFlags1
+									; preset the interface found flag to true
+									; if iface gate is not active, then the
+									; flag will be left true so remaining
+									; gates will be processed
+
 	bitf	interfaceGateIndex, #8000h
 	cc		findInterfaceGateCrossing, NTC
-
-	stl		A, interfaceFound		; store interface found flag so other
-									; functions can use it - if an iface gate is
-									; not active, a zero will be stored which
-									; indicates an interface was found
 
 	bitf	flags1, #DAC_ENABLED	; process DAC if it is enabled
 	cc		processDAC, TC			;  applies gain for each DAC gate to sample set
@@ -4245,8 +4266,8 @@ $9:
 	bitf	wallEndGateIndex, #8000h
 	rc		TC
 
-	ld		interfaceFound, A		; check to see if interface detected
-	rc		ANEQ					; exit if not
+	bitf	processingFlags1, #IFACE_FOUND		; check to see if interface detected
+	rc		NTC									; exit if not
 
 	b		processWall				; calculate the wall thickness
 
@@ -4304,6 +4325,11 @@ $2:
 			
 	adds	*AR5, A					; add the gate type flag to the results flags
 	st		#0, *AR5				; zero the results flags
+
+;debug mks -- dont' zero the results flag -- zero specific flags
+;such as hit/miss exceeded count
+;some flags need to be untouched such as GATE_EXCEEDED used by wall code
+;change this as soon as possible
 
 	stl		A, -8, *AR3+			; high byte
 	stl		A, *AR3+				; low byte
@@ -4748,7 +4774,7 @@ main:
 	st		#00h, frameCount0
 	st		#00h, frameSkipErrors
 	st		#00h, frameCountFlag
-	st		#00h, interfaceFound
+	st		#00h, processingFlags1
 	st		#00h, heartBeat
 	st		#00h, freeTimeCnt1
 	st		#00h, freeTimeCnt0
