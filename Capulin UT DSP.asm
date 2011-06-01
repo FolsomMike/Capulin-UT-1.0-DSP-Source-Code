@@ -142,8 +142,8 @@ GATE_EXCEEDED				.equ	0x0004
 ;bit masks for processingFlags1
 
 IFACE_FOUND					.equ	0x0001
-START_WALL_FOUND			.equ	0x0002
-END_WALL_FOUND				.equ	0x0004
+WALL_START_FOUND			.equ	0x0002
+WALL_END_FOUND				.equ	0x0004
 
 ;size of buffer entries
 
@@ -4201,6 +4201,14 @@ $2:	ldm		AR5, A					; use loop count as gate index
 
 	pshm	AR2						; save gate info pointer
 	call	findGateCrossing
+
+	andm	#~WALL_START_FOUND, processingFlags1 ; clear the found flag
+
+	xc		2, AEQ							; if A returned 0 from function call,
+											; set the found flag
+
+	orm		#WALL_START_FOUND, processingFlags1
+
 	popm	AR2						; restore gate info pointer
 	nop								; pipeline protection
 
@@ -4209,6 +4217,14 @@ $3:	bitf	*AR2, #GATE_WALL_END	; find crossing if gate is used for wall end
 
 	pshm	AR2						; save gate info pointer
 	call	findGateCrossing
+
+	andm	#~WALL_END_FOUND, processingFlags1 ; clear the found flag
+
+	xc		2, AEQ							; if A returned 0 from function call,
+											; set the found flag
+
+	orm		#WALL_END_FOUND, processingFlags1
+
 	popm	AR2						; restore gate info pointer
 	nop								; pipeline protection
 
@@ -4266,8 +4282,18 @@ $9:
 	bitf	wallEndGateIndex, #8000h
 	rc		TC
 
-	bitf	processingFlags1, #IFACE_FOUND		; check to see if interface detected
-	rc		NTC									; exit if not
+	; check to see if the interface was found, the first wall reflection was
+	; found, and the second wall reflection was found
+	; exit if any were missed - the signal will be ignored
+
+	bitf	processingFlags1, #IFACE_FOUND		; interface check
+	rc		NTC
+
+	bitf	processingFlags1, #WALL_START_FOUND	; first reflection check
+	rc		NTC
+
+	bitf	processingFlags1, #WALL_END_FOUND	; second reflection check
+	rc		NTC
 
 	b		processWall				; calculate the wall thickness
 
