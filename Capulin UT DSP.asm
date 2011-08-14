@@ -2640,6 +2640,8 @@ $3:	nop
 		
 	call	storeGatePeakResult		; store the result
 
+	ret
+
 ;	b		copyToAveragingBuffer	; copy new data to oldest buffer
 
 	.newblock						; allow re-use of $ variables
