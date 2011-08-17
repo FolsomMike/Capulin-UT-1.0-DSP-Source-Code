@@ -3855,6 +3855,51 @@ $2:
 ; numerator result was negative, the process still works when adding in the
 ; normalized whole number.
 ;
+; For a sample rate of 66.666 mHz and using a sound speed of 0.233 inches/uS,
+; the time between each sample represents 
+;
+; 66.666 mHz = 15 nS period = 0.000000015 sec
+; 0.233 inches/uS = 233,000 inches / sec
+; 233,000 inches * 0.000000015 sec = .003495 inches
+;
+; We really need at least .003495 inches of resolution.
+;
+; BUT -- since we measure twice the distance of the thickness because we
+;  are measuring there and back, we then divide by two which also increases
+;  our accuracy by two to give 0.0017475 inches per sample of resolution.
+; 
+; I like that.  I like that a lot.
+;
+; MAKING THINGS SIMPLER -- NEXT VERSION DROPS THE FRACTION MATH
+;
+; In this version, a complicated routine is used to more closely compute
+; the time of the signal crossing the gate.  This is done by returning
+; fractional values based on how close the crossing amplitude is to the
+; gate amplitude -- read all the notes for more info.  This can be used
+; again to increase accuracy, but the fraction division should be done
+; in the DSP instead of passing the numerators and denominators back to
+; the host.  Doing the division in the DSP allows for easier averaging.
+; The fraction will be ignored in the next version because there is
+; enough accuracy already when the divide by two is used due to the
+; measuring of the round trip signal.
+;
+; 4-3/16 (example for below explanation of future ideas)
+;
+; A simple division method:  multiply numerator (3) by 8 (left shift 3 times).
+; See how many times denominator (16) can be subtracted from numerator.
+; Multiply the whole number (4) by 8, add the number of subtractions to it.
+; This method just scales the decimal fraction up so that the relevant bits
+; are a whole number which can be added to the original whole number part
+; of the value (4).  The original whole number part (4) must also be scaled
+; up before adding.  Thus, the final answer is in eighths of a period and
+; should be divided by eight in the host to get the round trip time.  This
+; round trip time is then divided by 2 (if measuring between consecutive
+; echoes -- divide by more if using echoes farther apart).
+;
+; In the decimal world, this would be similar to shifting the fraction
+; and the whole number up by a decimal point so each count would represent
+; a tenth of a period rather than a single period.
+;
 
 processWall:
 
@@ -3904,6 +3949,9 @@ processWall:
 	; (the fractional distance where the gate threshold is located between the amplitudes
 	;  of the before and after crossing points is used as the approximate fractional
 	;  time distance between the points)
+
+	; at this time, the fractions are passed back to the host in pieces and calculated there
+	; so division is not required in the DSP
 
 	ld		*AR3-, A				; load amplitude of signal after crossing		
 
