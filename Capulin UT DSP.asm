@@ -310,38 +310,21 @@ DSP_ACKNOWLEDGE					.equ	127
 	;
 	; With 66 MHz sampling, the period between samples is 15 ns, or
 	; 0.015 us.  Assuming the speed of sound in steel is 0.233 inches/us,
-	; 15 ns gives a resolution of 0.003495 inches.  Since two measurements
-	; are required to calculate the wall, the resolution is twice this as
-	; each measurement has that resolution.
+	; 15 ns gives a resolution of 0.003495 inches.  Since the measurement
+	; is divided by two to account for the round trip sound path, the
+	; resolution is twice as good.
 	;
-	; To improve the resolution, an extrapolation is made to find a point
-	; between the 15 ns samples which more closely approximates the point
-	; in time where the signal crosses the gate.  This is done by assuming
-	; the line between two samples is nearly linear and calculating the
-	; fraction of the amplitude distance between the two points where the
-	; gate level falls.  This fraction can then be used as the fraction
-	; of the time between the two points where the signal crosses the gate.
-	; This assumes that the crossing occurs on the near vertical rising
-	; edge of the signal where the extrapolated line between two points
-	; is a nearly linear portion of the sine wave.
+	; To improve the resolution, a previous code version extrapolated
+	; a more exact gate crossing position.  This was more complicated
+	; than useful and was removed.  In Git, see the commit tagged 
+	; VersionWithFractionalMathForThickness for that version.
 	;
 	; The min and max peak distances between the gate crossings are stored
-	; and passed back when the host requests.  The distance between the
-	; point just before the crossover of the starting gate and the point
-	; just before the crossover of the ending gate is stored along with
-	; the numerator and denominator fraction for both crossovers - this
-	; is done for both the max and the min peak.
+	; and passed back when the host requests.
 	;
 	; Each new measurement is compared with the min and max peaks. If
 	; the distance for the new value is not equal to the old stored
-	; peak, a new min or max peak is stored as appropriate.  If the
-	; distance is the same, the fractional portions are compared to
-	; determine which is bigger or smaller.
-	;
-	; To avoid division, the numerators and denominators are stored
-	; and all values are normalized to have the same denominators
-	; so the numerators can be compared.  This is done on each
-	; measurement and comparison.
+	; peak, a new min or max peak is stored as appropriate.
 	;
 	; word  0:	current value - whole number distance between crossovers
 	; word  1:	current value - numerator first crossover
@@ -3841,20 +3824,6 @@ $2:
 ; Calculate the wall thickness and record the value if it is a new max or min
 ; peak.
 ;
-; See "Wall Peak Buffer Notes" near the top of this file for details on how
-; the wall is processed to improve the resolution.
-;
-; Note:
-; To check for a new peak, only the whole number time span is used.  This is
-; is not as accurate as using the whole number plus fraction, but is simpler
-; and quicker.  In the future, the whole number plus fraction can be used
-; without requiring division by multiplying each numerator by the denominators
-; of all other fractions in the equation to normalize.  The whole number can
-; be normalized by multiplying it by all other fractions as well. Each normalized
-; whole number is added to the normalized numerator of its fraction.  If the
-; numerator result was negative, the process still works when adding in the
-; normalized whole number.
-;
 ; For a sample rate of 66.666 mHz and using a sound speed of 0.233 inches/uS,
 ; the time between each sample represents 
 ;
@@ -3870,35 +3839,8 @@ $2:
 ; 
 ; I like that.  I like that a lot.
 ;
-; MAKING THINGS SIMPLER -- NEXT VERSION DROPS THE FRACTION MATH
-;
-; In this version, a complicated routine is used to more closely compute
-; the time of the signal crossing the gate.  This is done by returning
-; fractional values based on how close the crossing amplitude is to the
-; gate amplitude -- read all the notes for more info.  This can be used
-; again to increase accuracy, but the fraction division should be done
-; in the DSP instead of passing the numerators and denominators back to
-; the host.  Doing the division in the DSP allows for easier averaging.
-; The fraction will be ignored in the next version because there is
-; enough accuracy already when the divide by two is used due to the
-; measuring of the round trip signal.
-;
-; 4-3/16 (example for below explanation of future ideas)
-;
-; A simple division method:  multiply numerator (3) by 8 (left shift 3 times).
-; See how many times denominator (16) can be subtracted from numerator.
-; Multiply the whole number (4) by 8, add the number of subtractions to it.
-; This method just scales the decimal fraction up so that the relevant bits
-; are a whole number which can be added to the original whole number part
-; of the value (4).  The original whole number part (4) must also be scaled
-; up before adding.  Thus, the final answer is in eighths of a period and
-; should be divided by eight in the host to get the round trip time.  This
-; round trip time is then divided by 2 (if measuring between consecutive
-; echoes -- divide by more if using echoes farther apart).
-;
-; In the decimal world, this would be similar to shifting the fraction
-; and the whole number up by a decimal point so each count would represent
-; a tenth of a period rather than a single period.
+; For a version which used fractional math to improve the resolution even
+; more, see the commit in Git tagged VersionWithFractionalMathForThickness.
 ;
 
 processWall:
@@ -3906,18 +3848,6 @@ processWall:
 	; AR1 => wall peak buffer
 
 	stm		#wallPeakBuffer, AR1
-
-	; to improve the resolution, the actual point in time where the signal
-	; crosses the gate level is extrapolated to give a whole number and a
-	; fractional value
-
-	; the fractional time distance between the points before crossing the
-	; threshold and after crossing is computed - this is done by using the
-	; fractional amplitude distance where the gate level lies compared to
-	; the amplitude of the points before and after the crossing - the signal
-	; can be considered to be nearly linear on the leading edge of the 
-	; sinusoid where the gate should be set by the user for best effect, i.e.
-	; not near the peak of the signal where it flattens out
 
 	; calculate the whole number time distance between the before crossing points
 	; in the start and end gates
@@ -3941,71 +3871,23 @@ processWall:
 	ld		*AR4+, A				;  after crossing of end gate (unsigned)
 	sub		*AR3+, A  				; subtract start gate crossing from end gate crossing
 
-	stl		A, *AR1+				; save the whole number time distance
-
-	; calculate the denominator of the first gate fraction of a time period
-	; the amplitude difference between the before and after crossing points
-	; is the denominator of the fraction
-	; (the fractional distance where the gate threshold is located between the amplitudes
-	;  of the before and after crossing points is used as the approximate fractional
-	;  time distance between the points)
-
-	; at this time, the fractions are passed back to the host in pieces and calculated there
-	; so division is not required in the DSP
-
-	ld		*AR3-, A				; load amplitude of signal after crossing		
-
-	mar		*AR3-					; subtract amplitude of signal before crossing
-	sub		*AR3, A					;  this is the denominator
-
-	mar		*AR1+					; point to entry for denominator of start gate crossing
-	stl		A, *AR1-				; save the denominator, move back to numerator
-
-	; calculate the numerator for wall start gate
-	; subtract the gate level from the signal amplitude before the crossover
-
-	ld		wallStartGateLevel, A	; load wall start gate level
-	sub		*AR3, A  				; subtract level of point before crossing
-
-	stl		A, *AR1+				; save the numerator
-
-	; calculate the denominator for wall end gate (see notes for wall start gate)
-
-	ld		*AR4-, A				; load amplitude of signal after crossing
-
-	mar		*AR4-					; subtract amplitude of signal before crossing
-	sub		*AR4, A					;  this is the denominator
-
-	mar		*AR1+					; point to entry for denominator of end gate crossing
-	mar		*AR1+
-	stl		A, *AR1-				; save the denominator, move back to numerator
-
-	; calculate the numerator for wall end gate (see notes for wall start gate)
-
-	ld		wallEndGateLevel, A		; load wall end gate level
-	sub		*AR4, A  				; subtract level of point before crossing
-
-	stl		A, *AR1					; save the numerator
-
+	stl		A, *AR1					; save the whole number time distance
 
 	; check for new max peak
 
-	; NOTE: see notes at the top of the function regarding this method and
-	;      what could be done to improve it.
-
-
-	ld		*+AR1(+2), B			; load the old max peak
+	ld		*+AR1(+5), B			; load the old max peak
 	mvmm	AR1, AR2				; point AR2 at the max peak variables
 	ld		*+AR1(-5), A			; load new value
 
 	max		B						; is new bigger than old?
 	bc		$1, C					; no if C set, skip save
 
-	; call to store the new peak whole number and fractional parts
+	; call to store the new peak
 
 	pshm	AR1
 	call	storeNewPeak
 	popm	AR1
+	nop								; pipeline protection
 	nop								; pipeline protection
 
 $1:
@@ -4023,23 +3905,15 @@ $1:
 
 storeNewPeak:
 
-	; store the new peak whole number and fractional parts
+	; store the new peak
 	; AR1 should point at the new value
 	; AR2 should point at the peak variables to be updated
 
-	ld		*AR1+, A 				; whole number
-	stl		A, *AR2+				
-	ld		*AR1+, A				; numerator start gate
-	stl		A, *AR2+				
-	ld		*AR1+, A				; denominator start gate
-	stl		A, *AR2+				
-	ld		*AR1+, A				; numerator end gate
-	stl		A, *AR2+				
-	ld		*AR1+, A				; denominator end gate
-	stl		A, *AR2+				
+	ld		*AR1, A 				; whole number
+	stl		A, *AR2				
 
 	ld		trackCount, A			; get the tracking value for new peak
-	stl		A, *AR2					; store tracking value in results
+	stl		A, *+AR2(+5)			; store tracking value in results
 
 	ret
 
@@ -4920,6 +4794,8 @@ main:
 mainLoop:
 
 $1:	
+
+;	call	processWall	;debug mks
 
 	.if 	debug					; see debugCode function for details
 
