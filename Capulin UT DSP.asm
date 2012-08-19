@@ -4486,10 +4486,17 @@ $2:	add		#2, B					; increment the flag by 2 (each DSP gets every
 									; -24 for the save (shift=ASM-16)
 									; this shifts the highest byte to the lowest
 
-	; add one to the FPGA buffer to skip past the tracking word
+	; prepare pointers to source and destination buffers
 
-	stm		#FPGA_AD_SAMPLE_BUFFER+1, AR2	; point to start of buffers
+	stm		#FPGA_AD_SAMPLE_BUFFER, AR2		; point to tracking word at start of buffers
 	stm		#PROCESSED_SAMPLE_BUFFER, AR3	;(stm has no pipeline latency problem)
+
+	nop
+
+	ld		*AR2+, A				; load the tracking value for this sample set
+									; this can be linear or rotational position tracking
+									; depending on the system
+	stl		A, trackCount			; store it for tagging the peak data
 
 	ld		adSamplePackedSize, A 	; load size of FPGA buffer
 	sub		#1, A					; block repeat uses count-1
