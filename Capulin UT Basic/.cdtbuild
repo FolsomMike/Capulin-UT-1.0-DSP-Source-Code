@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?fileVersion 3.1.0?>
+
+<ManagedProjectBuildInfo>
+<project id="Capulin UT Basic.com.ti.ccstudio.buildDefinitions.C5400.ProjectType.1365108977" name="C5400" projectType="com.ti.ccstudio.buildDefinitions.C5400.ProjectType">
+<configuration artifactExtension="out" artifactName="${EXT_ROOT__Capulin_UT_Basic}/Debug/Capulin UT Basic" description="" id="com.ti.ccstudio.buildDefinitions.C5400.Debug.826302890" name="Debug" parent="com.ti.ccstudio.buildDefinitions.C5400.Debug">
+<toolChain id="com.ti.ccstudio.buildDefinitions.C5400_4.2.exe.DebugToolchain.514889385" name="TI Code Generation Tools" superClass="com.ti.ccstudio.buildDefinitions.C5400_4.2.exe.DebugToolchain" targetTool="com.ti.ccstudio.buildDefinitions.C5400_4.2.exe.linkerDebug.38866354">
+<option id="com.ti.ccstudio.buildDefinitions.core.OPT_CODEGEN_VERSION.2001641838" superClass="com.ti.ccstudio.buildDefinitions.core.OPT_CODEGEN_VERSION" value="4.2.0" valueType="string"/>
+<option id="com.ti.ccstudio.buildDefinitions.core.OPT_TAGS.622007366" superClass="com.ti.ccstudio.buildDefinitions.core.OPT_TAGS" valueType="stringList">
+<listOptionValue builtIn="false" value="DEVICE_CONFIGURATION_ID=com.ti.ccstudio.deviceModel.C5400.GenericC54xxDevice"/>
+<listOptionValue builtIn="false" value="DEVICE_ENDIANNESS=little"/>
+<listOptionValue builtIn="false" value="IS_ELF=false"/>
+<listOptionValue builtIn="false" value="LINKER_COMMAND_FILE=Capulin UT DSP.cmd"/>
+<listOptionValue builtIn="false" value="RUNTIME_SUPPORT_LIBRARY="/>
+<listOptionValue builtIn="false" value="IS_ASSEMBLY_ONLY=true"/>
+<listOptionValue builtIn="false" value="CCS_MBS_VERSION=4.1.2"/>
+<listOptionValue builtIn="false" value="PROJECT_KIND=com.ti.ccstudio.managedbuild.core.ProjectKind_Executable"/>
+<listOptionValue builtIn="false" value="LINK_ORDER="/>
+</option>
+<tool id="com.ti.ccstudio.buildDefinitions.C5400_4.2.exe.compilerDebug.624462282" name="C5400 Compiler" superClass="com.ti.ccstudio.buildDefinitions.C5400_4.2.exe.compilerDebug">
+<option id="com.ti.ccstudio.buildDefinitions.C5400_4.2.compilerID.DEFINE.1711648981" superClass="com.ti.ccstudio.buildDefinitions.C5400_4.2.compilerID.DEFINE" valueType="definedSymbols">
+<listOptionValue builtIn="false" value="&quot;_DEBUG&quot;"/>
+</option>
+<option id="com.ti.ccstudio.buildDefinitions.C5400_4.2.compilerID.INCLUDE_PATH.1536903360" superClass="com.ti.ccstudio.buildDefinitions.C5400_4.2.compilerID.INCLUDE_PATH" valueType="includePath">
+<listOptionValue builtIn="false" value="&quot;${CG_TOOL_ROOT}/include&quot;"/>
+<listOptionValue builtIn="false" value="&quot;${XDAIS_CG_ROOT}/packages/ti/xdais&quot;"/>
+<listOptionValue builtIn="false" value="&quot;${C5400_CSL_CG_ROOT}/include&quot;"/>
+</option>
+<option id="com.ti.ccstudio.buildDefinitions.C5400_4.2.compilerID.DIAG_WARNING.1003324805" superClass="com.ti.ccstudio.buildDefinitions.C5400_4.2.compilerID.DIAG_WARNING" valueType="stringList">
+<listOptionValue builtIn="false" value="225"/>
+</option>
+<option id="com.ti.ccstudio.buildDefinitions.C5400_4.2.compilerID.DIRECTORY_MODE.828096991" superClass="com.ti.ccstudio.buildDefinitions.C5400_4.2.compilerID.DIRECTORY_MODE" value="com.ti.ccstudio.buildDefinitions.C5400_4.2.compilerID.DIRECTORY_MODE.manual" valueType="enumerated"/>
+<option id="com.ti.ccstudio.buildDefinitions.C5400_4.2.compilerID.OBJ_DIRECTORY.1700919934" superClass="com.ti.ccstudio.buildDefinitions.C5400_4.2.compilerID.OBJ_DIRECTORY" value="&quot;${EXT_ROOT__Capulin_UT_Basic}/Debug&quot;" valueType="string"/>
+</tool>
+<tool id="com.ti.ccstudio.buildDefinitions.C5400_4.2.exe.linkerDebug.38866354" name="C5400 Linker" superClass="com.ti.ccstudio.buildDefinitions.C5400_4.2.exe.linkerDebug">
+<option id="com.ti.ccstudio.buildDefinitions.C5400_4.2.linkerID.generatedLinkerCommandFiles.565646407" superClass="com.ti.ccstudio.buildDefinitions.C5400_4.2.linkerID.generatedLinkerCommandFiles" valueType="libs">
+<listOptionValue builtIn="false" value="&quot;$(GEN_CMDS_QUOTED)&quot;"/>
+</option>
+<option id="com.ti.ccstudio.buildDefinitions.C5400_4.2.linkerID.SEARCH_PATH.1542419645" superClass="com.ti.ccstudio.buildDefinitions.C5400_4.2.linkerID.SEARCH_PATH" valueType="stringList">
+<listOptionValue builtIn="false" value="&quot;${CG_TOOL_ROOT}/lib&quot;"/>
+<listOptionValue builtIn="false" value="&quot;${CG_TOOL_ROOT}/include&quot;"/>
+<listOptionValue builtIn="false" value="&quot;${PROJECT_ROOT}&quot;"/>
+<listOptionValue builtIn="false" value="&quot;${EXT_ROOT__Capulin_UT_Basic}&quot;"/>
+<listOptionValue builtIn="false" value="&quot;${C5400_CSL_CG_ROOT}/lib&quot;"/>
+</option>
+<option id="com.ti.ccstudio.buildDefinitions.C5400_4.2.linkerID.MAP_FILE.1866993634" superClass="com.ti.ccstudio.buildDefinitions.C5400_4.2.linkerID.MAP_FILE" value="&quot;${EXT_ROOT__Capulin_UT_Basic}/Debug/Capulin UT Basic.map&quot;" valueType="string"/>
+<option id="com.ti.ccstudio.buildDefinitions.C5400_4.2.linkerID.OUTPUT_FILE.682409057" superClass="com.ti.ccstudio.buildDefinitions.C5400_4.2.linkerID.OUTPUT_FILE" value="&quot;${EXT_ROOT__Capulin_UT_Basic}/Debug/Capulin UT Basic.out&quot;" valueType="string"/>
+<option id="com.ti.ccstudio.buildDefinitions.C5400_4.2.linkerID.STACK_SIZE.1047622832" superClass="com.ti.ccstudio.buildDefinitions.C5400_4.2.linkerID.STACK_SIZE" value="0" valueType="string"/>
+<option id="com.ti.ccstudio.buildDefinitions.C5400_4.2.linkerID.HEAP_SIZE.774176234" superClass="com.ti.ccstudio.buildDefinitions.C5400_4.2.linkerID.HEAP_SIZE" value="0" valueType="string"/>
+<option id="com.ti.ccstudio.buildDefinitions.C5400_4.2.linkerID.INITIALIZATION_MODEL.1999057129" superClass="com.ti.ccstudio.buildDefinitions.C5400_4.2.linkerID.INITIALIZATION_MODEL" value="com.ti.ccstudio.buildDefinitions.C5400_4.2.linkerID.INITIALIZATION_MODEL._none" valueType="enumerated"/>
+</tool>
+<macros/>
+</toolChain>
+</configuration>
+<configuration artifactExtension="out" artifactName="${EXT_ROOT__Capulin_UT_Basic}/Release/Capulin UT Basic" description="" id="com.ti.ccstudio.buildDefinitions.C5400.Release.1601179288" name="Release" parent="com.ti.ccstudio.buildDefinitions.C5400.Release">
+<toolChain id="com.ti.ccstudio.buildDefinitions.C5400_4.2.exe.ReleaseToolchain.1461367390" name="TI Code Generation Tools" superClass="com.ti.ccstudio.buildDefinitions.C5400_4.2.exe.ReleaseToolchain" targetTool="com.ti.ccstudio.buildDefinitions.C5400_4.2.exe.linkerRelease.757124789">
+<option id="com.ti.ccstudio.buildDefinitions.core.OPT_CODEGEN_VERSION.709176697" superClass="com.ti.ccstudio.buildDefinitions.core.OPT_CODEGEN_VERSION" value="4.2.0" valueType="string"/>
+<option id="com.ti.ccstudio.buildDefinitions.core.OPT_TAGS.925817451" superClass="com.ti.ccstudio.buildDefinitions.core.OPT_TAGS" valueType="stringList">
+<listOptionValue builtIn="false" value="DEVICE_CONFIGURATION_ID=TMS320C54XX"/>
+<listOptionValue builtIn="false" value="DEVICE_ENDIANNESS=none"/>
+<listOptionValue builtIn="false" value="IS_ELF=false"/>
+<listOptionValue builtIn="false" value="LINKER_COMMAND_FILE="/>
+<listOptionValue builtIn="false" value="RUNTIME_SUPPORT_LIBRARY="/>
+<listOptionValue builtIn="false" value="IS_ASSEMBLY_ONLY=false"/>
+<listOptionValue builtIn="false" value="CCS_MBS_VERSION=4.1.2"/>
+<listOptionValue builtIn="false" value="PROJECT_KIND=com.ti.ccstudio.managedbuild.core.ProjectKind_Executable"/>
+<listOptionValue builtIn="false" value="RTSC_PRODUCTS=com.ti.rtsc.XDAIS:latest;"/>
+<listOptionValue builtIn="false" value="LINK_ORDER=Capulin UT DSP - Debug - use in Code Composer.cmd;"/>
+</option>
+<tool id="com.ti.ccstudio.buildDefinitions.C5400_4.2.exe.compilerRelease.659896302" name="C5400 Compiler" superClass="com.ti.ccstudio.buildDefinitions.C5400_4.2.exe.compilerRelease">
+<option id="com.ti.ccstudio.buildDefinitions.C5400_4.2.compilerID.DIAG_WARNING.41011127" superClass="com.ti.ccstudio.buildDefinitions.C5400_4.2.compilerID.DIAG_WARNING" valueType="stringList">
+<listOptionValue builtIn="false" value="225"/>
+</option>
+<option id="com.ti.ccstudio.buildDefinitions.C5400_4.2.compilerID.INCLUDE_PATH.1532142146" superClass="com.ti.ccstudio.buildDefinitions.C5400_4.2.compilerID.INCLUDE_PATH" valueType="includePath">
+<listOptionValue builtIn="false" value="&quot;${CG_TOOL_ROOT}/include&quot;"/>
+<listOptionValue builtIn="false" value="&quot;${XDAIS_CG_ROOT}/packages/ti/xdais&quot;"/>
+<listOptionValue builtIn="false" value="&quot;${C5400_CSL_CG_ROOT}/include&quot;"/>
+</option>
+<option id="com.ti.ccstudio.buildDefinitions.C5400_4.2.compilerID.DIRECTORY_MODE.917936729" superClass="com.ti.ccstudio.buildDefinitions.C5400_4.2.compilerID.DIRECTORY_MODE" value="com.ti.ccstudio.buildDefinitions.C5400_4.2.compilerID.DIRECTORY_MODE.manual" valueType="enumerated"/>
+<option id="com.ti.ccstudio.buildDefinitions.C5400_4.2.compilerID.OBJ_DIRECTORY.1634954784" superClass="com.ti.ccstudio.buildDefinitions.C5400_4.2.compilerID.OBJ_DIRECTORY" value="&quot;${EXT_ROOT__Capulin_UT_Basic}/Release&quot;" valueType="string"/>
+</tool>
+<tool id="com.ti.ccstudio.buildDefinitions.C5400_4.2.exe.linkerRelease.757124789" name="C5400 Linker" superClass="com.ti.ccstudio.buildDefinitions.C5400_4.2.exe.linkerRelease">
+<option id="com.ti.ccstudio.buildDefinitions.C5400_4.2.linkerID.OUTPUT_FILE.1533830595" superClass="com.ti.ccstudio.buildDefinitions.C5400_4.2.linkerID.OUTPUT_FILE" value="&quot;${EXT_ROOT__Capulin_UT_Basic}/Release/Capulin UT Basic.out&quot;" valueType="string"/>
+<option id="com.ti.ccstudio.buildDefinitions.C5400_4.2.linkerID.MAP_FILE.22086114" superClass="com.ti.ccstudio.buildDefinitions.C5400_4.2.linkerID.MAP_FILE" value="&quot;${EXT_ROOT__Capulin_UT_Basic}/Release/Capulin UT Basic.map&quot;" valueType="string"/>
+<option id="com.ti.ccstudio.buildDefinitions.C5400_4.2.linkerID.SEARCH_PATH.504872523" superClass="com.ti.ccstudio.buildDefinitions.C5400_4.2.linkerID.SEARCH_PATH" valueType="stringList">
+<listOptionValue builtIn="false" value="&quot;${CG_TOOL_ROOT}/lib&quot;"/>
+<listOptionValue builtIn="false" value="&quot;${CG_TOOL_ROOT}/include&quot;"/>
+<listOptionValue builtIn="false" value="&quot;${PROJECT_ROOT}&quot;"/>
+<listOptionValue builtIn="false" value="&quot;${EXT_ROOT__Capulin_UT_Basic}&quot;"/>
+<listOptionValue builtIn="false" value="&quot;${C5400_CSL_CG_ROOT}/lib&quot;"/>
+</option>
+</tool>
+</toolChain>
+<resourceConfiguration exclude="true" id="com.ti.ccstudio.buildDefinitions.C5400.Release.1601179288./Capulin UT Basic/Capulin UT DSP.cmd" name="Capulin UT DSP.cmd" rcbsApplicability="disable" resourcePath="/Capulin UT Basic/Capulin UT DSP.cmd" toolsToInvoke="com.ti.ccstudio.buildDefinitions.C5400_4.2.exe.linkerRelease.757124789./Capulin UT Basic/Capulin UT DSP.cmd">
+<tool id="com.ti.ccstudio.buildDefinitions.C5400_4.2.exe.linkerRelease.757124789./Capulin UT Basic/Capulin UT DSP.cmd" name="C5400 Linker" superClass="com.ti.ccstudio.buildDefinitions.C5400_4.2.exe.linkerRelease.757124789"/>
+</resourceConfiguration>
+</configuration>
+<macros/>
+</project>
+</ManagedProjectBuildInfo>
