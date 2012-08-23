@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<configurations XML_version="1.2" id="configurations_0">
+<configuration XML_version="1.2" id="Texas Instruments Simulator_0">
+        <instance XML_version="1.2" desc="Texas Instruments Simulator_0" href="connections\TISIM_Connection.xml" id="Texas Instruments Simulator_0" xml="TISIM_Connection.xml" xmlpath="connections"/>
+    </configuration>
+</configurations>

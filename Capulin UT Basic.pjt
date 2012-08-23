@@ -12,7 +12,9 @@ Config="Debug"
 Config="Release"
 
 [Source Files]
+Source="Capulin UT DSP Debug.asm"
 Source="Capulin UT DSP.asm"
+Source="Globals.asm"
 Source="TMS320VC5441.asm"
 Source="Capulin UT DSP - Debug - use in Code Composer.cmd"
 

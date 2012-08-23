@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<projectDescription>
+	<name>Capulin UT Basic</name>
+	<comment></comment>
+	<projects>
+	</projects>
+	<buildSpec>
+		<buildCommand>
+			<name>org.eclipse.cdt.managedbuilder.core.genmakebuilder</name>
+			<arguments>
+			</arguments>
+		</buildCommand>
+	</buildSpec>
+	<natures>
+		<nature>org.eclipse.cdt.core.cnature</nature>
+		<nature>org.eclipse.cdt.core.ccnature</nature>
+		<nature>org.eclipse.cdt.managedbuilder.core.managedBuildNature</nature>
+		<nature>com.ti.ccstudio.managedbuild.core.ccsNature</nature>
+	</natures>
+	<linkedResources>
+		<link>
+			<name>TMS320VC5441.asm</name>
+			<type>1</type>
+			<locationURI>EXT_ROOT__Capulin_UT_Basic/TMS320VC5441.asm</locationURI>
+		</link>
+		<link>
+			<name>Globals.asm</name>
+			<type>1</type>
+			<locationURI>EXT_ROOT__Capulin_UT_Basic/Globals.asm</locationURI>
+		</link>
+		<link>
+			<name>Capulin UT DSP Debug.asm</name>
+			<type>1</type>
+			<locationURI>EXT_ROOT__Capulin_UT_Basic/Capulin%20UT%20DSP%20Debug.asm</locationURI>
+		</link>
+		<link>
+			<name>Capulin UT DSP.asm</name>
+			<type>1</type>
+			<locationURI>EXT_ROOT__Capulin_UT_Basic/Capulin%20UT%20DSP.asm</locationURI>
+		</link>
+		<link>
+			<name>Capulin UT Basic.pjt</name>
+			<type>1</type>
+			<locationURI>EXT_ROOT__Capulin_UT_Basic/Capulin%20UT%20Basic.pjt</locationURI>
+		</link>
+	</linkedResources>
+</projectDescription>

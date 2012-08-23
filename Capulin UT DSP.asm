@@ -16,9 +16,13 @@
 * IMPORTANT NOTE
 *
 * To assemble the program for use with the Capulin system, use the
-* batch files located in the root source folder, such as:
+* batch file located in the root source folder, such as:
 * 	"aa Assemble Capulin UT DSP.bat"
-* These batch files create the necessary output.
+* This batch files creates the necessary output hex file for loading
+* into the DSPs.  Assembling in the IDE does NOT create the hex file.
+* Compile and debug in the IDE, then execute the assemble batch file
+* from Windows Explorer, then execute the copy batch file to copy the
+* hex file to the proper location for use by the Java program.
 *
 * When creating a Code Composer project, the root source folder should
 * be used as the project folder.  The root folder is the folder containing
@@ -32,11 +36,12 @@
 * Double check the "Location" path to ensure that it ends with the root
 * source folder before clicking "Finish".
 * 
-* Two nearly identical .cmd files are used.  The assembler batch file uses
-* one to load the .obj file from the root source folder.  The other has a
-* name like "Capulin UT DSP - Debug - use in Code Composer.cmd" and is
-* loaded into the Composer project so that it loads the .obj file from the
-* "Debug" folder where Composer places it by default for debug mode.
+* Two nearly identical .cmd files are used.  The one used by the assembler
+* batch file mentioned above uses one to load the .obj file from the root
+* source folder where the batch file specifies it to be placed.  The other
+* cmd file has a name like "Capulin UT DSP - Debug - use in Code Composer.cmd"
+*  and is loaded into the Composer project so that it loads the .obj file
+* from the "Debug" folder where Composer places it by default for debug mode.
 *
 * NOTE: Any changes to one .cmd file should be copied to the other.
 *
@@ -44,12 +49,16 @@
 * and set "Autoinit Model" to "No Autoinitialization" to avoid the undefined
 * warning for "_c_int00".
 *
-*
 * To debug in Composer, use Build All, then File/Load Program to load the
 * .out file from the root source directory.  Each time the project is rebuilt
 * use File/Reload Program.  After each load or reload, use Debug/Reset CPU
 * to refresh the disassembly and code windows.  Use View/Memory to view
 * the memory data.
+*
+* Debug setup and testing code is contained in "Capulin UT DSP Debug.asm",
+* the code in which is not compiled unless the assembler symbol "debug" is
+* defined in "Globals.asm". Search for the phrase "debugCode" and read the
+* notes in "Capulin UT DSP Debug.asm" for more info.
 *
 * When installing Code Composer, you must the Code Composer Studio Setup
 * program first.  From the center column, select the C5410 Device Simulator
@@ -61,7 +70,25 @@
 
 	.mmregs
 
+
+	.include "Globals.asm"	; global symbols such as "debug"
+
 	.include	"TMS320VC5441.asm"
+
+	.global	pointToGateInfo
+	.global	calculateGateIntegral
+	.global	BRC
+	.global	Variables1
+	.global	scratch1
+	.global	debugCode
+
+	.global	setADSampleSize
+	.global fpgaADSampleBufEnd
+	.global SERIAL_PORT_RCV_BUFFER
+	.global	FPGA_AD_SAMPLE_BUFFER
+	.global	GATES_ENABLED
+	.global	setFlags1
+	.global	getPeakData
 
 ;-----------------------------------------------------------------------------
 ; Miscellaneous Defines
@@ -87,6 +114,8 @@ GATES_ENABLED				.equ	0x0002	; gates enabled flag
 DAC_ENABLED					.equ	0x0004	; DAC enabled flag
 ASCAN_FAST_ENABLED			.equ	0x0008	; AScan fast version enabled flag
 ASCAN_SLOW_ENABLED			.equ	0x0010	; AScan slow version enabled flag
+ASCAN_FREE_RUN				.equ	0x0020	; AScan runs free, not triggered by a gate
+CREATE_ASCAN				.equ	0x0040	; signals that a new AScan dataset should be created
 
 POSITIVE_HALF				.equ	0x0000
 NEGATIVE_HALF				.equ	0x0001
@@ -94,15 +123,38 @@ FULL_WAVE					.equ	0x0002
 RF_WAVE						.equ	0x0003
 
 ;bits for gate and DAC flags
-GATE_ACTIVE					.equ	0x0001
-GATE_REPORT_NOT_EXCEED		.equ	0x0002
-GATE_MAX_MIN				.equ	0x0004
-GATE_WALL_START				.equ	0x0008
-GATE_WALL_END				.equ	0x0010
-GATE_FIND_CROSSING			.equ	0x0020
-GATE_USES_TRACKING			.equ	0x0040
-GATE_FOR_FLAW				.equ	0x0080
-GATE_FOR_INTERFACE			.equ	0x0100
+GATE_ACTIVE						.equ	0x0001
+GATE_REPORT_NOT_EXCEED			.equ	0x0002
+GATE_MAX_MIN					.equ	0x0004
+GATE_WALL_START					.equ	0x0008
+GATE_WALL_END					.equ	0x0010
+GATE_FIND_CROSSING				.equ	0x0020
+GATE_USES_TRACKING				.equ	0x0040
+GATE_FIND_PEAK					.equ	0x0080
+GATE_FOR_INTERFACE				.equ	0x0100
+GATE_INTEGRATE_ABOVE_GATE		.equ	0x0200
+GATE_QUENCH_ON_OVERLIMIT		.equ	0x0400
+GATE_TRIGGER_ASCAN_SAVE			.equ	0x0800
+
+;bit masks for gate results data flag
+
+HIT_COUNT_MET				.equ	0x0001
+MISS_COUNT_MET				.equ	0x0002
+GATE_EXCEEDED				.equ	0x0004
+
+;bit masks for processingFlags1
+
+IFACE_FOUND					.equ	0x0001
+WALL_START_FOUND			.equ	0x0002
+WALL_END_FOUND				.equ	0x0004
+
+;size of buffer entries
+
+;WARNING: Adjust these values any time you add more bytes to the buffers.
+
+GATE_PARAMS_SIZE			.equ	14
+GATE_RESULTS_SIZE			.equ	12
+DAC_PARAMS_SIZE				.equ	9
 
 ; end of Miscellaneous Defines
 ;-----------------------------------------------------------------------------
@@ -129,6 +181,7 @@ DSP_GET_PEAK_DATA				.equ	13
 DSP_SET_RECTIFICATION			.equ	14
 DSP_SET_FLAGS1					.equ	15
 DSP_CLEAR_FLAGS1				.equ	16
+DSP_SET_GATE_SIG_PROC_THRESHOLD	.equ	17
 DSP_ACKNOWLEDGE					.equ	127
 
 ; end of Message / Command IDs
@@ -187,7 +240,10 @@ DSP_ACKNOWLEDGE					.equ	127
 	.bss	flags1,1				; bit 0 : serial port transmitter active
 									; bit 1 : Gates Enabled
 									; bit 2 : DAC Enabled
-									; bit 3 : AScan Enabled
+									; bit 3 : Fast AScan Enabled
+									; bit 4 : Slow AScan Enabled
+									; bit 5 : AScan free run, not triggered by a gate
+									; bit 6 : signals that a new AScan data set should be created
 
 	.bss	softwareGain,1			; gain multiplier for the signal
 	.bss	adSampleSize,1			; size of the unpacked data set from the FPGA
@@ -233,8 +289,8 @@ DSP_ACKNOWLEDGE					.equ	127
 	.bss	frameSkipErrors,1		; missing data set error count
 	.bss	frameCountFlag,1		; stores previous count flag from FPGA
 
-	.bss	interfaceGateIndex,1	; index number of the interface gate if used
-	.bss	interfaceFound,1		; set to 1 if the signal crossed the iface gate
+	.bss	interfaceGateIndex,1	; index number of the interface gate if in use
+	.bss	processingFlags1,1		; flags used by signal processing functions
 
 	.bss	wallStartGateIndex,1	; index number of the wall start gate if used
 	.bss	wallStartGateInfo,1		; pointer to wall start gate info
@@ -250,6 +306,7 @@ DSP_ACKNOWLEDGE					.equ	127
 	.bss	scratch2,1				; scratch variable for any temporary use
 	.bss	scratch3,1				; scratch variable for any temporary use
 	.bss	scratch4,1				; scratch variable for any temporary use
+	.bss	scratch5,1				; scratch variable for any temporary use
 
 	; Wall Peak Buffer Notes
 	;
@@ -259,38 +316,21 @@ DSP_ACKNOWLEDGE					.equ	127
 	;
 	; With 66 MHz sampling, the period between samples is 15 ns, or
 	; 0.015 us.  Assuming the speed of sound in steel is 0.233 inches/us,
-	; 15 ns gives a resolution of 0.003495 inches.  Since two measurements
-	; are required to calculate the wall, the resolution is twice this as
-	; each measurement has that resolution.
+	; 15 ns gives a resolution of 0.003495 inches.  Since the measurement
+	; is divided by two to account for the round trip sound path, the
+	; resolution is twice as good.
 	;
-	; To improve the resolution, an extrapolation is made to find a point
-	; between the 15 ns samples which more closely approximates the point
-	; in time where the signal crosses the gate.  This is done by assuming
-	; the line between two samples is nearly linear and calculating the
-	; fraction of the amplitude distance between the two points where the
-	; gate level falls.  This fraction can then be used as the fraction
-	; of the time between the two points where the signal crosses the gate.
-	; This assumes that the crossing occurs on the near vertical rising
-	; edge of the signal where the extrapolated line between two points
-	; is a nearly linear portion of the sine wave.
+	; To improve the resolution, a previous code version extrapolated
+	; a more exact gate crossing position.  This was more complicated
+	; than useful and was removed.  In Git, see the commit tagged 
+	; VersionWithFractionalMathForThickness for that version.
 	;
 	; The min and max peak distances between the gate crossings are stored
-	; and passed back when the host requests.  The distance between the
-	; point just before the crossover of the starting gate and the point
-	; just before the crossover of the ending gate is stored along with
-	; the numerator and denominator fraction for both crossovers - this
-	; is done for both the max and the min peak.
+	; and passed back when the host requests.
 	;
 	; Each new measurement is compared with the min and max peaks. If
 	; the distance for the new value is not equal to the old stored
-	; peak, a new min or max peak is stored as appropriate.  If the
-	; distance is the same, the fractional portions are compared to
-	; determine which is bigger or smaller.
-	;
-	; To avoid division, the numerators and denominators are stored
-	; and all values are normalized to have the same denominators
-	; so the numerators can be compared.  This is done on each
-	; measurement and comparison.
+	; peak, a new min or max peak is stored as appropriate.
 	;
 	; word  0:	current value - whole number distance between crossovers
 	; word  1:	current value - numerator first crossover
@@ -333,26 +373,35 @@ DSP_ACKNOWLEDGE					.equ	127
 	; Gate Buffer Notes
 	;
 	; The gatesBuffer section is for storing 10 gates.
-	; Each gate is defined by 9 words each:
+	; Each gate is defined by 14 words each:
 	;
-	; word 0: first gate ID number (first gate is always interface gate)
-	; word 1: gate function flags (see below)
-	; word 2: gate start location MSB
-	; word 3: gate start location LSB
-	; word 4: gate adjusted start location
-	; word 5: gate width
-	; word 6: gate level
-	; word 7: gate hit count (number of consecutive violations before flag)
-	; word 8: gate miss count (number of consecutive non-violations before flag)
+	; word  0: first gate ID number (if interface gate is in use, it must always be gate 0)
+	;			   (upper two bits used to store pointer to next averaging buffer)
+	; word  1: gate function flags (see below)
+	; word  2: gate start location MSW
+	; word  3: gate start location LSW
+	; word  4: gate adjusted start location
+	; word  5: gate width / 3
+	; word  6: gate level
+	; word  7: gate hit count (number of consecutive violations before flag)
+	; word  8: gate miss count (number of consecutive non-violations before flag)
+	; word  9: Threshold 1
+	; word 10: unused
+	; word 11: unused
+	; word 12: unused
+	; word 13: unused
 	; word 0: second gate ID number
 	; word 1: ...
 	;	...remainder of the gates...
 	;
+	; WARNING: if you add more entries to this buffer, you must adjust
+	;           GATE_PARAMS_SIZE constant.
+	; 
 	; All values are defined in sample counts - i.e a width of 3 is a width
 	; of 3 A/D sample counts.
 	;
-	; The first gate is always the interface gate.  The section numbers are
-	; useful for debugging purposes if nothing else.
+	; If interface gate is in use, it must always be the first gate.  The
+	; section numbers are useful for debugging purposes if nothing else.
 	;
 	; If interface tracking is off, the start position is based from the
 	; initial pulse.  Since the FPGA delays the start of sample collection
@@ -363,7 +412,7 @@ DSP_ACKNOWLEDGE					.equ	127
 	; for any changes which may have been made to the variable hardwareDelay
 	; by the host.  Note that the hardwareDelay value should match the
 	; value set in the FPGA.
-	; 
+	;
 	; If interface tracking is on, the start position is based from the
 	; first point where the signal rises above the interface gate.  After
 	; each transducer pulse, the interface crossing is detected and added
@@ -373,11 +422,12 @@ DSP_ACKNOWLEDGE					.equ	127
 	;
 	; bit 0 :	0 = gate is inactive
 	; 			1 = gate is active
-	; bit 1 :	0 = no secondary flag
-	;			1 = secondary flag if signal does NOT exceed gate
+	; bit 1 :	0 = no report on does NOT exceed
+	;			1 = report if signal does NOT exceed gate
 	;				(useful for loss of interface or backwall detection)
 	; bit 2 :	0 = flag if signal greater than gate (max gate)
 	; 			1 = flag if signal less than gate (min gate)
+	;			 (see Caution 1 below)
 	; bit 3:	0 = not used for wall measurement
 	;			1 = used as first gate for wall measurement
 	; bit 4:	0 = not used for wall measurement
@@ -390,17 +440,36 @@ DSP_ACKNOWLEDGE					.equ	127
 	;				(interface gate itself must NOT use tracking)
 	; bit 7:	0 = do not search for a peak
 	;			1 = search for a peak
+	; bit 8:	0 = this is not the interface gate
+	;			1 = this is the interface gate
+	; bit 9:	0 = do not integrate above gate level
+	;			1 = integrate signal above gate level
+	; bit 10:	0 = do not quench signal on signal over limit
+	;			1 = quench signal on signal over limit
+	; bit 11: 	0 = this is not an AScan trigger gate 
+	;			1 = AScan sent if this gate exceeded (must have peak search enabled)
+	; bit 12:	unused
+	; bit 13:	unused
+	; bit 14:	lsb - gate data averaging buffer size
+	; bit 15:	msb - gate data averaging buffer size
+	;
+	; -----------------------------------------------
+	;
+	; Caution 1: the max/min gate bit 2 above matches the bit 2 position in the gate results
+	;            buffer flags below so that the bit can easily be copied from the former to
+	;			 the latter before sending peak data to the host
+	;			 DO NOT MOVE unless all other code here and in the host is matched.
 	;
 
-	.bss	gateBuffer, 90
+	.bss	gateBuffer, GATE_PARAMS_SIZE * 10;
 
 	; Gate Results Buffer Notes
 	;
 	; The gateResultsBuffer section is for storing the data collected
-	; for 12 gates.
-	; Each gate is defined by 9 words each:
+	; for 10 gates.
+	; Each gate is defined by 12 words each:
 	;
-	; word 0: first gate ID number (first gate is always interface gate)
+	; word 0: first gate ID number
 	; word 1: gate result flags (see below)
 	; word 2: not used
 	; word 3: level exceeded count
@@ -418,12 +487,13 @@ DSP_ACKNOWLEDGE					.equ	127
 	;
 	; Bit assignments for the Gate Result flags:
 	;
-	; bit 0 :	0 = no signal exceeded gate
+	; bit 0 :	0 = no signal exceeded gate more than hitCount times consecutively
 	; 			1 = signal exceeded gate more than hitCount times consecutively
-	; bit 1 :	0 = signal exceeded gate adequate number of times
-	; 			1 = signal failed to exceed gate more than missCount time consecutively
+	; bit 1 :	0 = signal did not miss gate more than allowed limit
+	; 			1 = signal failed to exceed gate more than missCount times consecutively
 	; bit 2:	0 = max gate, higher values are worst case
 	; 			1 = min gate, lower values are worst case
+	;			 (see Caution 2 below)
 	;
 	; Notes:
 	;
@@ -444,8 +514,13 @@ DSP_ACKNOWLEDGE					.equ	127
 	; two requires only that violations occur on shots 1 and 3 with the
 	; second and forth shot being handled by another DSP.
 	;
+	; Caution 2: the max/min gate bit 2 matches the bit 2 position in the gate
+	;            buffer flags so that the bit can easily be copied from the latter to
+	;			 the former before sending peak data to the host
+	;			 DO NOT MOVE unless all other code here and in the host is matched.
+	;
 
-	.bss	gateResultsBuffer, 120
+	.bss	gateResultsBuffer, GATE_RESULTS_SIZE * 10
 
 	; DAC Buffer Notes
 	;
@@ -473,18 +548,22 @@ DSP_ACKNOWLEDGE					.equ	127
 	; All values are defined in sample counts - i.e a width of 3 is a width
 	; of 3 A/D sample counts.
 	;
-	; The sections' operation with Interface Tracking is identical to that
+	; This section's operation with Interface Tracking is identical to that
 	; of the gates - see "Gate Buffer Notes" above for details.
 	;
 	; Bit assignments for the Section Function flags:
 	;
 	; bit 0 :	0 = section is inactive
 	; 			1 = section is active
+	;
 
-	.bss	dacBuffer, 90
+	.bss	dacBuffer, DAC_PARAMS_SIZE * 10
 
 	.bss	stack, 99				; the stack is set up here
 	.bss	endOfStack,	1			; code sets SP here on startup
+									; NOTE: you can have plenty of stack!
+									;   The PIC micro-controller has the limited
+									;   stack space, not the C50!
 
 
 ; NOTE: Various buffers are defined at 3000h and up (see above) - be careful about
@@ -1371,6 +1450,7 @@ sendPacket:
 ; 
 ; On exit the current pointer is stored so the subsequent blocks can be
 ; retrieved using the getAScanNextBlock function.
+;
 ; The block size is also saved so it can be used by getAScanNextBlock.
 ;
 
@@ -1378,6 +1458,12 @@ getAScanBlock:
 
 	ld		#Variables1, DP
 
+	bitf	flags1, #ASCAN_FREE_RUN	; only trigger another AScan dataset creation if in free run mode 
+	bc		$2, NTC
+
+	orm		#CREATE_ASCAN, flags1  
+
+$2:
 	mar		*AR3+%					; skip past the packet size byte
 	ld		*AR3+%, 8, A			; get high byte
 	adds	*AR3+%, A				; add in low byte
@@ -1396,26 +1482,27 @@ getAScanBlock:
 	ld		aScanScale, A				; store the current AScan scaling ratio
 	stl		A, *AR3+					; in first byte of packet
 
-	stm		#gateResultsBuffer+8,AR2	; point to the entry of gate 0 (the
-										; interface gate) which holds the buffer
-										; address of the point which first
+	stm		#gateResultsBuffer+8, AR2	; point to the entry of gate 0 (the
+										; interface gate if it is in use) which holds
+										; the buffer address of the point which first
 										; exceeded the interface gate
+										; if the interface gate is not in use, then
+										; this value should be ignored by the host
 
-	ld		#PROCESSED_SAMPLE_BUFFER, B ;start of buffer
-	and		#0ffffh, B					;remove sign - pointer is unsigned
+	ld		#PROCESSED_SAMPLE_BUFFER, B ; start of buffer
+	and		#0ffffh, B					; remove sign - pointer is unsigned
 
 	ldu		*AR2+, A					; load the interface crossing position
-
 										; position is relative to the start of the
 										;  buffer, so remove this offset
 	sub		B, 0, A						; ( A - B << SHIFT ) -> A 
 										;  (the TI manual is obfuscated on this one)
-	stl		A, -8, *AR3+			; high byte
-	stl		A, *AR3+				; low byte
+	stl		A, -8, *AR3+				; high byte -- store interface crossing position
+	stl		A, *AR3+					; low byte	--   in the packet for host
 
-	stm		#ASCAN_BUFFER, AR2		; point to processed data buffer
+	stm		#ASCAN_BUFFER, AR2			; point to processed data buffer
 
-	ld		getAScanBlockSize, A	; get number of words to transfer
+	ld		getAScanBlockSize, A		; get number of words to transfer
 	stlm	A, AR1
 																			
 $1:
@@ -1465,25 +1552,27 @@ getAScanNextBlock:
 
 	stm		#SERIAL_PORT_XMT_BUFFER+6, AR3	; point to first data word after header
 
-	ld		aScanScale, A				; store the current AScan scaling ratio
-	stl		A, *AR3+					; in first byte of packet
+	ld		aScanScale, A					; store the current AScan scaling ratio
+	stl		A, *AR3+						; in first byte of packet
 
-	stm		#gateResultsBuffer+8,AR2	; point to the entry of gate 0 (the
-										; interface gate) which holds the buffer
-										; address of the point which first
-										; exceeded the interface gate
-	ld		#PROCESSED_SAMPLE_BUFFER, B ;start of buffer
-	and		#0ffffh, B					;remove sign - pointer is unsigned
+	stm		#gateResultsBuffer+8, AR2		; point to the entry of gate 0 (the
+											; interface gate if it is in use) which holds
+											; the buffer address of the point which first
+											; exceeded the interface gate
+											; if the interface gate is not in use, then
+											; this value should be ignored by the host
 
-	ldu		*AR2+, A				; load the interface crossing position
+	ld		#PROCESSED_SAMPLE_BUFFER, B 	; start of buffer
+	and		#0ffffh, B						; remove sign - pointer is unsigned
 
-									; position is relative to the start of the
-									;  buffer, so remove this offset
-	sub		B, 0, A					; ( A - B << SHIFT ) -> A 
-									;  (the TI manual is obfuscated on this one)
+	ldu		*AR2+, A						; load the interface crossing position
 
-	stl		A, -8, *AR3+			; high byte
-	stl		A, *AR3+				; low byte
+											; position is relative to the start of the
+											;  buffer, so remove this offset
+	sub		B, 0, A							; ( A - B << SHIFT ) -> A 
+											;  (the TI manual is obfuscated on this one)
+	stl		A, -8, *AR3+					; high byte -- store interface crossing position
+	stl		A, *AR3+						; low byte	--   in the packet for host
 
 	ld		getAScanBlockPtr, A 	; get the packet data pointer
 	stlm	A, AR2
@@ -1688,6 +1777,12 @@ setSoftwareGain:
 ;
 ; A value of zero or one means one hit or miss will cause a flag. Values
 ; above that are one to one - 3 = 3 hits, 4 = 4 hits, etc.
+;
+; Note: At first glance, it would seem that a hit count of zero would always
+; trigger setting of the flag, but the code is never reached unless a peak
+; exceeds the gate.  Thus, it functions basically the same as a value of 1.
+; Thus, the host needs to catch the special case of zero and ignore the
+; flag in that case.
 ;
 ; NOTE: Each DSP core processes every other shot of its associated
 ; channel. So a hit count of 1 will actually flag if shot 1 and shot 3
@@ -2014,9 +2109,10 @@ $1:	stl		A, aScanChunk			; used to count input data points
 ; initial pulse.
 ;
 ; If interface tracking is on, the interface gate still uses absolute
-; positioning (always the first gate) while the start location of
-; the other gates is in relation to the point where the interface signal
-; exceeds the interface gate (this is calculated with each pulse).
+; positioning while the start location of the other gates is in relation
+; to the point where the interface signal exceeds the interface gate
+; (this is calculated with each pulse).  If an interface gate is being
+; used, it must always be the first gate (gate 0).
 ;
 ; See "Gate Buffer Notes" and "DAC Buffer Notes" in this source code file
 ; for more details.
@@ -2177,6 +2273,76 @@ $4:	b		sendACK					; send back an ACK packet
 ;-----------------------------------------------------------------------------
 
 ;-----------------------------------------------------------------------------
+; processAScan
+;
+; Creates and stores an AScan dataset.  This is a compressed sample set of the
+; input buffer which is sent to the host upon request.  It is meant for
+; display in an oscilloscope type display.
+;
+; A dataset is only created if the CREATE_ASCAN bit in flags1 is set.  This
+; is set by the getAScanBlock function when the host requests the first AScan
+; block and by findGatePeak when the signal exceeds a trigger gate.
+;
+; wip mks -- Since the CREATE_ASCAN bit is set by the call for the first
+; block of the AScan, the AScan will generally be overwritten with a new
+; dataset before it is completely read as it takes a bit of time to read the
+; entire dataset in multiple blocks. The resulting glitches has not seemed
+; to be obvious in the display, but it would be better for the host to pass
+; a flag on the last block request to initiate the next AScan creation.
+;
+; The DSP's have multiple AScan modes -- Free Run and Triggered.
+;
+; Free Run Mode:
+;
+; Upon receiving a request for an AScan, the DSP immediately returns the
+; AScan data set created after the last request.  The DSP then creates a new
+; data set from whatever data is in the sample buffer to be ready for the next
+; AScan request.  Thus the display always reflects the data stored after the
+; previous request, but this is not obvious to the user.
+;
+; When viewing brief signal indications, the signal will not be very clear as
+; the indications will only occasionally flash into view when they happen to
+; coincide with the time of request.
+;
+; Triggered:
+;
+; The DSP will only create and store an AScan packet when any gate flagged as
+; a trigger gate is exceeded by the signal.  An AScan request is answered with
+; the latest packet created.  This allows the user to adjust the gate such that
+; only the signal of interest triggers a save, thus making sure that that
+; signal is clearly captured and displayed.
+;
+; The parameter pHardwareDelay is stored for use by the function which
+; processes the returned packet.
+;
+; See processAScanFast, processAScanSlow, and kBlock functions for more
+; details.
+;
+; On entry:
+;
+; DP should point to Variables1 page.
+;
+
+processAScan:
+
+	bitf	flags1, #CREATE_ASCAN		; do nothing if flag not set
+	rc		NTC
+
+	andm	#~CREATE_ASCAN, flags1		; clear the flag
+
+	bitf	flags1, #ASCAN_FAST_ENABLED	; process AScan fast if enabled
+	cc		processAScanFast, TC		; (this will cause framesets to be skipped
+										;  due to the extensive processing required)
+										; ONLY use fast or slow version
+
+	bitf	flags1, #ASCAN_SLOW_ENABLED	; process AScan slow if enabled
+	cc		processAScanSlow, TC		; (this is safe to use during inspection)
+										; ONLY use fast or slow version
+
+; end of processAScan
+;-----------------------------------------------------------------------------
+
+;-----------------------------------------------------------------------------
 ; processAScanFast
 ;
 ; (see also processAScanSlow)
@@ -2185,7 +2351,8 @@ $4:	b		sendACK					; send back an ACK packet
 ; to the host.
 ;
 ; There are two versions of this function - fast and slow.  The desired mode is
-; set by a message call. (wip mks -- this is not yet implemented)
+; set by a message call. (wip mks -- the ability to switch is not yet implemented)
+; (wip mks -- slow scan tested very little, seems a little too slow)
 ;
 ; The fast version processes the entire buffer at one time and returns the data
 ; set in large chunks as requested by the host.  This will usually cause
@@ -2454,6 +2621,313 @@ processAScanSlowInit:
 ;-----------------------------------------------------------------------------
 
 ;-----------------------------------------------------------------------------
+; calculateGateIntegral
+;
+; Finds the integral of the data bracketed by the gate which has a level
+; above the gate.  Anything below the gate level is ignored.
+;
+; NOTE: This should work for all modes -- +Half, -Half, Full, and RF since
+; only data above the gate is processed.  For most purposes, the gate should
+; be a "max" gate.
+;
+; On entry, AR2 should point to the flags entry for the gate.  Variable
+; scratch1 should contain the gate's index.
+; 
+; The integral is stored in the gate's peak results entry in gateResultBuffer.
+;
+; NOTE: If the signal equals the gate level, it is considered to exceed it.
+;
+; If the gate is a "max" gate, the signal must go higher than the gate's
+; height.  If it is a "min" gate, the signal must go lower.
+;
+; If the peak is higher than the gate level, the gate's hit counter value
+; in the results buffer is incremented.  If the hit count value reaches
+; the hitCount setting, the appropriate bit is set in the gate's results
+; flags.
+;
+; NOTE: The "adjusted start location" for the gate should be calculated
+; before calling this function.
+;
+
+calculateGateIntegral:
+
+; if you include the next line, also include the branch to copyToAveragingBuffer at the end of this function
+;	call	averageGate				; average the sample set with the previous
+									; set(s) -- up to four sets can be averaged
+
+									; AR2 already point to the gate's paramaters
+	mar		*AR2+					; skip the flags
+	mar		*AR2+					; skip the MSB raw start location
+	mar		*AR2+					; skip the LSB
+
+	ldu		*AR2+, A				; set AR3 to adjusted start location of the gate
+	stlm	A, AR3
+	stlm	A, AR4					; AR4 is passed to storeGatePeakResult as the
+									; buffer location of the peak -- not useful for
+									; the integral so set to the start of the gate
+
+	ld		*AR2, A					; Set block repeat counter to the gate width.
+	add		*AR2, A					; Value in param list is 1/3 the true width.
+	add		*AR2+, A				; Add three times to get true width.
+									; There may be slight round off error here,
+									; but shouldn't have significant effect.
+
+	rc		AEQ						; if the gate width is zero, don't attempt
+									; to calculate integral
+
+	sub		#1, A					; Subtract 1 to account for loop behavior.
+	stlm	A, BRC
+
+	ld		*AR2+, A				; load the gate level
+	stl		A, scratch4				; store for quick use
+
+	mar		*+AR2(-6)				; point back to gate function flags
+
+	ld 		#0h, A					; zero A in preparation for summing
+
+; same integration code used for any signal mode, +half, -half, Full, RF
+; the result will vary depending on the mode
+
+	rptb	$3
+
+
+; load each data point and subtract the gate level to shift it down,
+; values which then fall below zero will be ignored -- this acts as a
+; threshold at the gate level
+
+	ld		*AR3+, B				; load each data point
+	sub		scratch4, B				; subtract an offset (use the
+									; gate level)
+
+	nop								; pipeline protection for xc
+	nop
+
+	xc		1, BGT
+	add		B, A					; sum each data point only if
+									; it is greater than zero
+		
+$3:	nop
+	
+	sfta	A, -2					; scale down the result
+		
+	call	storeGatePeakResult		; store the result
+
+	ret
+
+;	b		copyToAveragingBuffer	; copy new data to oldest buffer
+
+	.newblock						; allow re-use of $ variables
+
+; end of calculateGateIntegral
+;-----------------------------------------------------------------------------
+
+;-----------------------------------------------------------------------------
+; averageGate
+;
+; Averages the samples in the gate with the previous sets of data (up to 4
+; sets).
+;
+; The number of sets to average (buffer size) is transferred from the host
+; in the upper most two bits of the gate's flags.
+;
+; The counter tracking which buffer was filled last time is stored in the upper
+; most two bits of the gate's ID number.
+;
+; On entry, AR2 should point to the flags entry for the gate.  Variable
+; scratch1 should contain the gate's index.
+;
+; NOTE: The "adjusted start location" for the gate should be calculated
+; before calling this function.
+;
+; This function does nothing if the averaging buffer size is 0.
+;
+
+averageGate:
+
+	ldu		*AR2, A					; get the buffer size from flags -- shift to bit 0
+	sfta	A, -14
+	rc		AEQ						; do nothing if averaging buffer size is zero
+									; zero from host means no averaging
+
+									; AR2 already point to the gate's paramaters
+	mar		*AR2+					; skip the flags
+	mar		*AR2+					; skip the MSB raw start location
+	mar		*AR2+					; skip the LSB
+
+	ldu		*AR2+, A				; set AR3 to adjusted start location of the gate
+	stlm	A, AR3
+	stl		A, scratch5				; store for later use by copyToAveragingBuffer
+
+	ld		*AR2, A					; Set block repeat counter to the gate width.
+	add		*AR2, A					; Value in param list is 1/3 the true width.
+	add		*AR2+, A				; Add three times to get true width.
+									; There may be slight round off error here,
+									; but shouldn't have significant effect.
+	sub		#1, A					; Subtract 1 to account for loop behavior.
+	stlm	A, BRC
+
+
+; increment the buffer counter -- if it is equal to the number of
+; averaging buffers to be used (specified by host), then reset to
+; 1 -- the first time through the counter will be zero so that
+; buffer 1 will be used first
+
+	mar		*+AR2(-5)				; move back to the gate's flags
+	ldu		*AR2-, B				; load the flags and shift buffer size
+									; to average down to bit 0 (this number from host)
+	sfta	B, -14
+
+	ldu		*AR2, A					; load gate ID and shift buffer counter to bit 0
+	sfta	A, -14
+	
+	min		A						; is limit or counter bigger?
+
+	bc		$1, C					; if the counter is equal to the max buffer to
+									; average, reset counter to 1 
+
+	; increment counter
+
+	ldu		*AR2, A					; get the ID & buffer counter
+	add		#04000h, A				; increment counter at bit 14
+									
+	stl		A, *AR2					; save the ID with new counter
+
+	b		$2
+	
+$1:	; reset counter to 1
+
+	andm	#03fffh, *AR2			; clear the old counter in ID
+	orm		#04000h, *AR2			; set counter bits to 01, point AR2 at flags
+
+$2:
+
+; set up the pointers to each buffer -- they are 2000h apart so they could
+; hold the entire 8K data sample set if the gate(s) were that big 
+
+	ldm		AR3, A					; get adjusted gate start location
+	add		#2000h, A				; buffer 1
+	stlm	A, AR4
+	add		#2000h, A				; buffer 2
+	stlm	A, AR5
+	add		#2000h, A				; buffer 3
+	stlm	A, AR6
+
+; the summed data gets stored over the data in the oldest buffer, pointed at by
+; AR7 -- the gate's adjusted start entry gets set to this value so the following
+; processing functions will operate on that summed data
+; after processing, the new data in the 8000h buffer is copied to this oldest
+; buffer, overwriting the summed data which will not be needed any more
+
+	ld		#2000h, A				; load spacing between buffers
+	stlm	A, T					; preload T for mpya
+
+	ldu		*AR2, A					; load gate ID
+	sfta	A, 2					; shift buffer counter up to upper of A for mpya
+
+	mpya	A						; multiply A(bits 32-16) x T -> B
+
+	ldm		AR3, B					; get adjusted gate start location
+
+	add		B, A					; add buffer offset to location in the 8000h buffer
+									; where the gate's adjusted start location points at
+									; this will now point to the gate's mirror location in
+									; the current averaging history buffer
+
+	stlm	A, AR7					; use AR7 to track result buffer
+	mar		*+AR2(+4)				; move to adjusted gate start
+	stl		A, *AR2					; following processing functions will
+									; now work on data at this location
+
+	mar		*+AR2(-3)				; move back to gate flags
+
+	rptb	$4
+
+; add the values from all the buffers together
+; if a buffer isn't being used, it will have zeroes and won't affect the
+; sum -- this is the simplest way to do it at the time
+; all buffers need to be zeroed on program start
+
+	ld		*AR3+, A				; sum each data point from all 4 buffers
+	add		*AR4+, A
+	add		*AR5+, A		
+	add		*AR6+, A
+$4:	stl		A, *AR7+
+	
+;	sfta	A, -2					; scale down the result
+
+	ret
+	
+	.newblock
+
+; end of averageGate
+;-----------------------------------------------------------------------------
+
+;-----------------------------------------------------------------------------
+; copyToAveragingBuffer
+;
+; This function copies data for the gate from the buffer at 8000h to the 
+; history buffer with specified by the value in the gate's adjusted start
+; location parameter. This is done so that the averageGate function can use
+; the history buffers to average the signal over time.
+;
+; On entry, variable scratch1 should contain the gate's index.
+;
+; Variable scratch5 should contain the gate's adjusted location in the
+; 8000h buffer while the gate's adjusted location parameter should contain
+; the destination buffer (this is set by the averageGate function).
+;
+; This data copy is necessary because the 4 buffers are not truly rotated.
+; Incoming data is always inserted into the 8000h buffer and then rotated
+; to one of the other three.  If the program is instead changed to dump
+; incoming data directly into the oldest data buffer then this copy will
+; no longer be necessary.
+;
+; This function does nothing if the averaging buffer size is 0.
+;
+
+copyToAveragingBuffer:
+
+	ld		scratch1, A				; get the gate index
+	call	pointToGateInfo			; point AR2 to the gate's parameter list
+
+	ldu		*AR2, A					; get the buffer size from flags -- shift to bit 0
+	sfta	A, -14
+	rc		AEQ						; do nothing if averaging buffer size is zero
+									; zero from host means no averaging
+
+
+	ldu		scratch5, A				; set AR3 to adjusted start location of the gate
+	stlm	A, AR3					;  this is the new data in the 8000h buffer
+									;  this pointer stored by function averageGate
+
+	mar		*+AR2(+3)				; move to adjusted start location in the gate's
+									; parameters -- averageGate function sets this
+									; to the buffer to be used next
+
+	ldu		*AR2+, A				; set AR3 to adjusted start location of the gate
+	stlm	A, AR4
+
+	ld		*AR2, A					; Set block repeat counter to the gate width.
+	add		*AR2, A					; Value in param list is 1/3 the true width.
+	add		*AR2+, A				; Add three times to get true width.
+									; There may be slight round off error here,
+									; but shouldn't have significant effect.
+	sub		#1, A					; Subtract 1 to account for loop behavior.
+	stlm	A, BRC
+
+	mar		*+AR2(-5)				; move back to gate flags
+
+	rptb	$1						; copy newest data to the oldest buffer
+$1:	mvdd	*AR3+, *AR4+
+
+	ret
+	
+	.newblock
+
+; end of copyToAveragingBuffer
+;-----------------------------------------------------------------------------
+
+;-----------------------------------------------------------------------------
 ; findGatePeak
 ;
 ; Finds the peak value and its location for the gate entry pointed to by AR2.
@@ -2481,21 +2955,28 @@ processAScanSlowInit:
 ; NOTE: The "adjusted start location" for the gate should be calculated
 ; before calling this function.
 ;
+; If the gate is flagged as an AScan trigger gate, the CREATE_ASCAN flag
+; will be set in flags1 so that an AScan data set will be created from
+; the current data set so the signal can be displayed by the host.
+;
+; On entry, DP should point to Variables1 page.
+;
 
 findGatePeak:
 
 	stm		#3, AR0					; look at every third sample
 									; (AR0 is used to increment sample pointer)
 
+									; AR2 already point to the gate's parameters
 	mar		*AR2+					; skip the flags
 	mar		*AR2+					; skip the MSB raw start location
 	mar		*AR2+					; skip the LSB
 
-	ldu		*AR2+, A				; set AR3 to adjusted start location
+	ldu		*AR2+, A				; set AR3 to adjusted start location of the gate
 	stlm	A, AR3
 
 	ld		*AR2+, A				; set block repeat counter to the
-	sub		#1, A					; gate width, subtract 1 to account
+	sub		#1, A					; gate width / 3, subtract 1 to account
 	stlm	A, BRC					; for loop behavior
 
 	mar     *+AR3(2)				; start with third sample
@@ -2517,7 +2998,6 @@ findGatePeak:
 	mar		*+AR2(-5)				; point back to gate function flags
 
 	bitf	*AR2, #GATE_MAX_MIN		; function flags - check gate type
-
 	bc		$2, TC					; look for max if 0 or min if 1
 
 ; max gate - look for maximum signal in the gate
@@ -2624,7 +3104,7 @@ $4:	ld		*AR3+0, B				; get next sample
 	mar		*+AR4(-2)				; AR4 points 3 points ahead of the peak
 									; adjust to point to one after as this
 									; is expected on exit
-	mvmm	AR4, AR3				; get buffer address of peak
+	mvmm	AR4, AR3				; buffer address of peak -> AR3
 	mar		*+AR3(-3)				; move back to first of skipped samples
 									; just before the found peak
 
@@ -2686,7 +3166,7 @@ storeGatePeakResult:
 	ld		scratch2, B				; load the peak
 	ld		scratch4, A				; load the gate level
 
-	bitf	scratch3, #0x02			; function flags - check gate type
+	bitf	scratch3, #GATE_MAX_MIN	; function flags - check gate type
 	bc		$3, TC					; look for max if 0 or min if 1
 
 ; max gate - check if peak greater than gate level
@@ -2706,7 +3186,7 @@ $3:
 $4:
 
 ; since the peak signal exceeded the gate, clear the "not exceeded" count
-; and increment the "exceeded count"
+; and increment the "exceeded" count
 
 	ld		*+AR2(+1), A			; load hit count threshold from gate info
 	stl		A, hitCount				; and store it
@@ -2714,23 +3194,31 @@ $4:
 	call	pointToGateResults		; point to the entry for gate in scratch1
 	pshm	AR2						; save the pointer
 
-	mar		*+AR2(3)				; move to "exceeded" count
+	mar		*+AR2(3)				; move to "not exceeded" count
 
 	st		#0,*AR2-				; clear the "not exceeded" count
 
-	ld		*AR2, A					; increment the "exceeded count"
+	ld		*AR2, A					; increment the "exceeded" count
 	add		#1, A
 	stl		A, *AR2
 	
 	sub		hitCount, A				; see if number of consecutive hits
-	bc		$1, ALT					; >= preset limit - skip if not
+	bc		$7, ALT					; >= preset limit - skip if not
 
 	st		#0,*AR2-				; clear the "exceeded" count	
 
 	mar		*AR2-					; skip to the gate results flags
 
-	orm		#1, *AR2				; set bit 0 - signal exceeded gate
+	orm		#HIT_COUNT_MET, *AR2	; set flag - signal exceeded gate
 									; hitCount number of times
+
+	;if the gate is an AScan trigger gate, set the flag to initiate the saving of an
+	;AScan dataset from the current samples
+
+$7:	bitf	scratch3, #GATE_TRIGGER_ASCAN_SAVE	; function flags - check if trigger gate
+	bc		$1, NTC								; don't trigger an AScan if not a trigger gate 
+
+	orm		#CREATE_ASCAN, flags1				; set flag -- create a new AScan dataset		
 
 $1:	b		checkForNewPeak
 
@@ -2747,16 +3235,16 @@ handleNoPeakCrossing:
 
 	mar		*+AR2(2)				; move to "exceeded" count
 
-	; since the signal exceeded the gate, clear the "not exceeded" count
-	; and increment the "exceeded count"
+	; since the signal did not exceed the gate, clear the "exceeded" count
+	; and increment the "not exceeded" count
 
 	st		#0,*AR2+				; clear the "exceeded" count
 
-	ld		*AR2, A					; increment the "not exceeded count"
+	ld		*AR2, A					; increment the "not exceeded" count
 	add		#1, A
 	stl		A, *AR2
 	
-	sub		missCount, A			; see if number of consecutive hits
+	sub		missCount, A			; see if number of consecutive misses
 	bc		$2, ALT					; >= preset limit - skip if not
 
 	st		#0,*AR2-				; clear the "not exceeded" count	
@@ -2764,10 +3252,11 @@ handleNoPeakCrossing:
 	mar		*AR2-					; skip to the gate results flags
 	mar		*AR2-
 
-	orm		#2, *AR2				; set bit 1 - signal did not exceed gate
+	orm		#MISS_COUNT_MET, *AR2	; set bit 1 - signal missed the gate
 									; missCount number of times
 
 $2:	b		checkForNewPeak
+
 
 checkForNewPeak:
 
@@ -2776,25 +3265,11 @@ checkForNewPeak:
 
 	popm	AR2						; reload the gate results pointer
 	nop								; pipeline protection
-
-	; word 0: first gate ID number (first gate is always interface gate)
-	; word 1: gate result flags (see below)
-	; word 2: not used
-	; word 3: level exceeded count
-	; word 4: level not exceeded count
-	; word 5: signal before exceeding
-	; word 6: signal before exceeding buffer address
-	; word 7: signal after exceeding
-	; word 8: signal after exceeding buffer address
-	; word 9: peak in the gate (max for a max gate, min for a min)
-	; word 10: peak buffer address
-	; word 11: peak tracking location
-
 	mar		*+AR2(8)				; move to stored peak value
 	ld		*AR2, A					; load the stored peak
 	ld		scratch2, B				; load the new peak
 
-	bitf	scratch3, #0x02			; function flags - check gate type
+	bitf	scratch3, #GATE_MAX_MIN	; function flags - check gate type
 	bc		$5, TC					; look for max if 0 or min if 1
 
 ; max gate - check if peak greater than stored peak
@@ -2816,7 +3291,7 @@ $5:
 $6:
 
 	stl		A, *AR2+				; store the new peak in results
-	ld		AR4, A					; get the new peak's buffer address
+	ldm		AR4, A					; get the new peak's buffer address
 	stl		A, *AR2+				; store address in results
 	ld		trackCount, A			; get the tracking value for new peak
 	stl		A, *AR2+				; store tracking value in results
@@ -2878,7 +3353,7 @@ findGateCrossing:
 	stlm	A, AR3
 
 	ld		*AR2+, A				; set block repeat counter to the
-	sub		#1, A					; gate width, subtract 1 to account
+	sub		#1, A					; gate width / 3, subtract 1 to account
 	stlm	A, BRC					; for loop behavior
 
 	mar     *+AR3(2)				; start with third sample
@@ -2894,8 +3369,7 @@ findGateCrossing:
 
 	mar		*+AR2(-6)				; point back to gate function flags
 
-	bitf	*AR2, #0x02				; function flags - check gate type
-
+	bitf	*AR2, #GATE_MAX_MIN		; function flags - check gate type
 	bc		$2, TC					; look for max if 0 or min if 1
 
 	; max gate - look for signal crossing above the gate
@@ -3005,10 +3479,12 @@ storeGateCrossingResult:
 
 	mar		*AR2-					; skip to the gate results flags
 
-	orm		#1, *AR2				; set bit 0 - signal exceeded gate
+	orm		#HIT_COUNT_MET, *AR2	; set bit 0 - signal exceeded gate
 									; hitCount number of times
 
 $1:	ld		#0, A					; return 0 - crossing point found
+
+	orm		#GATE_EXCEEDED, *AR2	; set flag - signal exceeded the gate level
 
 	ret
 
@@ -3038,10 +3514,12 @@ handleNoCrossing:
 	mar		*AR2-					; skip to the gate results flags
 	mar		*AR2-
 
-	orm		#2, *AR2				; set bit 1 - signal did not exceed gate
+	orm		#MISS_COUNT_MET, *AR2	; set bit 1 - signal did not exceed gate
 									; missCount number of times
 
 $2:	ld		#-1, A					; return -1 as no crossing found
+
+	andm	#~GATE_EXCEEDED, *AR2	; clear flag - signal did not exceed the gate level
 
 	ret
 
@@ -3087,8 +3565,8 @@ $2:	ld		#-1, A					; return -1 as no crossing found
 ; NOTE: The "adjusted start location" for the gate should be calculated
 ; before calling this function.
 ;
-; NOTE: This function is similar to findGateCrossing.  This
-; function does not applies gain to the samples.  The use of the A & B
+; NOTE: This function is similar to findGateCrossing.  That
+; function does not apply gain to the samples.  The use of the A & B
 ; registers during the loop are opposite in the two functions because
 ; the gain version must use A to multiply the gain.  This function
 ; jumps to end code in findGateCrossing.
@@ -3106,7 +3584,7 @@ findGateCrossingAfterGain:
 	stlm	A, AR3
 
 	ld		*AR2+, A				; set block repeat counter to the
-	sub		#1, A					; gate width, subtract 1 to account
+	sub		#1, A					; gate width / 3, subtract 1 to account
 	stlm	A, BRC					; for loop behavior
 
 	ld		softwareGain, A			; get the global gain value
@@ -3130,8 +3608,7 @@ findGateCrossingAfterGain:
 
 	mar		*+AR2(-6)				; point back to gate function flags
 
-	bitf	*AR2, #0x02				; function flags - check gate type
-
+	bitf	*AR2, #GATE_MAX_MIN		; function flags - check gate type
 	bc		$2, TC					; look for max if 0 or min if 1
 
 	; max gate - look for signal crossing above the gate
@@ -3234,14 +3711,15 @@ $7:
 pointToGateInfo:
 
 	ld		#gateBuffer, B			; start of gate info buffer
+	stm		#GATE_PARAMS_SIZE, T	; number of words per gate info entry
 	b		$1
 
 pointToDACInfo:
 
 	ld		#dacBuffer, B			; start of DAC info buffer
+	stm		#DAC_PARAMS_SIZE, T		; number of words per DAC gate info entry
 
 $1:	stl		A, scratch1				; save the gate index number
-	stm		#9, T					; number of words per gate info entry
 	mpyu	scratch1, A				; multiply gate number by words per
 									; gate to point to gate's info area
 
@@ -3297,7 +3775,9 @@ pointToGateResults:
 ; Calculates the adjusted gate start location and then calls findGateCrossing
 ; to find the location where the signal exceeds the gate's level.
 ;
-; On return, A = 0 if crossing found, -1 if no crossing found.
+; On return:
+;  crossing found: A = 0 and IFACE_FOUND flag set in processingFlags1
+;  no crossing found: A = -1 and IFACE_FOUND flag cleared in processingFlags1
 ;
 ; DP should point to Variables1 page.
 ;
@@ -3324,7 +3804,7 @@ findInterfaceGateCrossing:
 	ld		interfaceGateIndex, A	; load interface gate index
 	call	pointToGateInfo			; point AR2 to the info for gate in A
 
-	andm	#0bfh, *AR2				; disable "interface tracking" for gate
+	andm	#0ffbfh, *AR2			; disable "interface tracking" for gate
 									; see notes above
 
 	pshm	AR2						; save gate info pointer
@@ -3332,6 +3812,13 @@ findInterfaceGateCrossing:
 	popm	AR2						; restore gate info pointer
 
 	call	findGateCrossingAfterGain	; find where signal crosses above gate
+
+	andm	#~IFACE_FOUND, processingFlags1 ; clear the found flag
+
+	xc		2, AEQ							; if A returned 0 from function call,
+											; set the found flag
+
+	orm		#IFACE_FOUND, processingFlags1
 
 	ret
 
@@ -3404,8 +3891,8 @@ $1: ; interface tracking is on
 	call	pointToGateResults		; point AR2 to the results for gate in scratch1
 
 	mar		*+AR2(7)				; point to the entry of gate 0 (the
-									; interface gate) which holds the buffer
-									; address of the point which first
+									; interface gate if in use) which holds the
+									; buffer address of the point which first
 									; exceeded the interface gate
 
 	ldu		*AR2, B					; get interface crossing buffer location
@@ -3437,19 +3924,23 @@ $2:
 ; Calculate the wall thickness and record the value if it is a new max or min
 ; peak.
 ;
-; See "Wall Peak Buffer Notes" near the top of this file for details on how
-; the wall is processed to improve the resolution.
+; For a sample rate of 66.666 mHz and using a sound speed of 0.233 inches/uS,
+; the time between each sample represents 
 ;
-; Note:
-; To check for a new peak, only the whole number time span is used.  This is
-; is not as accurate as using the whole number plus fraction, but is simpler
-; and quicker.  In the future, the whole number plus fraction can be used
-; without requiring division by multiplying each numerator by the denominators
-; of all other fractions in the equation to normalize.  The whole number can
-; be normalized by multiplying it by all other fractions as well. Each normalized
-; whole number is added to the normalized numerator of its fraction.  If the
-; numerator result was negative, the process still works when adding in the
-; normalized whole number.
+; 66.666 mHz = 15 nS period = 0.000000015 sec
+; 0.233 inches/uS = 233,000 inches / sec
+; 233,000 inches * 0.000000015 sec = .003495 inches
+;
+; We really need at least .003495 inches of resolution.
+;
+; BUT -- since we measure twice the distance of the thickness because we
+;  are measuring there and back, we then divide by two which also increases
+;  our accuracy by two to give 0.0017475 inches per sample of resolution.
+; 
+; I like that.  I like that a lot.
+;
+; For a version which used fractional math to improve the resolution even
+; more, see the commit in Git tagged VersionWithFractionalMathForThickness.
 ;
 
 processWall:
@@ -3457,18 +3948,6 @@ processWall:
 	; AR1 => wall peak buffer
 
 	stm		#wallPeakBuffer, AR1
-
-	; to improve the resolution, the actual point in time where the signal
-	; crosses the gate level is extrapolated to give a whole number and a
-	; fractional value
-
-	; the fractional time distance between the points before crossing the
-	; threshold and after crossing is computed - this is done by using the
-	; fractional amplitude distance where the gate level lies compared to
-	; the amplitude of the points before and after the crossing - the signal
-	; can be considered to be nearly linear on the leading edge of the 
-	; sinusoid where the gate should be set by the user for best effect, i.e.
-	; not near the peak of the signal where it flattens out
 
 	; calculate the whole number time distance between the before crossing points
 	; in the start and end gates
@@ -3492,68 +3971,23 @@ processWall:
 	ld		*AR4+, A				;  after crossing of end gate (unsigned)
 	sub		*AR3+, A  				; subtract start gate crossing from end gate crossing
 
-	stl		A, *AR1+				; save the whole number time distance
-
-	; calculate the denominator of the first gate fraction of a time period
-	; the amplitude difference between the before and after crossing points
-	; is the denominator of the fraction
-	; (the fractional distance where the gate threshold is located between the amplitudes
-	;  of the before and after crossing points is used as the approximate fractional
-	;  time distance between the points)
-
-	ld		*AR3-, A				; load amplitude of signal after crossing		
-
-	mar		*AR3-					; subtract amplitude of signal before crossing
-	sub		*AR3, A					;  this is the denominator
-
-	mar		*AR1+					; point to entry for denominator of start gate crossing
-	stl		A, *AR1-				; save the denominator, move back to numerator
-
-	; calculate the numerator for wall start gate
-	; subtract the gate level from the signal amplitude before the crossover
-
-	ld		wallStartGateLevel, A	; load wall start gate level
-	sub		*AR3, A  				; subtract level of point before crossing
-
-	stl		A, *AR1+				; save the numerator
-
-	; calculate the denominator for wall end gate (see notes for wall start gate)
-
-	ld		*AR4-, A				; load amplitude of signal after crossing
-
-	mar		*AR4-					; subtract amplitude of signal before crossing
-	sub		*AR4, A					;  this is the denominator
-
-	mar		*AR1+					; point to entry for denominator of end gate crossing
-	mar		*AR1+
-	stl		A, *AR1-				; save the denominator, move back to numerator
-
-	; calculate the numerator for wall end gate (see notes for wall start gate)
-
-	ld		wallEndGateLevel, A		; load wall end gate level
-	sub		*AR4, A  				; subtract level of point before crossing
-
-	stl		A, *AR1					; save the numerator
-
+	stl		A, *AR1					; save the whole number time distance
 
 	; check for new max peak
 
-	; NOTE: see notes at the top of the function regarding this method and
-	;      what could be done to improve it.
-
-
-	ld		*+AR1(+2), B			; load the old max peak
+	ld		*+AR1(+5), B			; load the old max peak
 	mvmm	AR1, AR2				; point AR2 at the max peak variables
 	ld		*+AR1(-5), A			; load new value
 
 	max		B						; is new bigger than old?
 	bc		$1, C					; no if C set, skip save
 
-	; call to store the new peak whole number and fractional parts
+	; call to store the new peak
 
 	pshm	AR1
 	call	storeNewPeak
 	popm	AR1
+	nop								; pipeline protection
 	nop								; pipeline protection
 
 $1:
@@ -3571,23 +4005,15 @@ $1:
 
 storeNewPeak:
 
-	; store the new peak whole number and fractional parts
+	; store the new peak
 	; AR1 should point at the new value
 	; AR2 should point at the peak variables to be updated
 
-	ld		*AR1+, A 				; whole number
-	stl		A, *AR2+				
-	ld		*AR1+, A				; numerator start gate
-	stl		A, *AR2+				
-	ld		*AR1+, A				; denominator start gate
-	stl		A, *AR2+				
-	ld		*AR1+, A				; numerator end gate
-	stl		A, *AR2+				
-	ld		*AR1+, A				; denominator end gate
-	stl		A, *AR2+				
+	ld		*AR1, A 				; whole number
+	stl		A, *AR2				
 
 	ld		trackCount, A			; get the tracking value for new peak
-	stl		A, *AR2					; store tracking value in results
+	stl		A, *+AR2(+5)			; store tracking value in results
 
 	ret
 
@@ -3693,7 +4119,7 @@ $2:	ldm		AR5, A					; use loop count as gate index
 	stlm	A, AR4
 
 	ld		*AR2+, A				; set block repeat counter to the
-	sub		#1, A					; gate width, subtract 1 to account
+	sub		#1, A					; gate width / 3, subtract 1 to account
 	stlm	A, BRC					; for loop behavior
 
 	; see notes in header of setSoftwareGain function for details on -9 shift
@@ -3736,7 +4162,7 @@ $8:	banz	$2,	*AR5-				; decrement DAC gate index pointer
 ; positions, finding signal crossings if enabled, max peaks if enabled.
 ;
 ;
-; DP should point to Variables1 page.
+; On entry, DP should point to Variables1 page.
 ;
 ; The interfaceGateIndex, wallStartGateIndex, wallEndGateIndex variables
 ; are set to ffffh if those gates are not set up.  If they are setup, the
@@ -3753,16 +4179,17 @@ processGates:
 
 	ld		#0, A					; preload A with interface found flag
 
+	orm		#IFACE_FOUND, processingFlags1
+									; preset the interface found flag to true
+									; if iface gate is not active, then the
+									; flag will be left true so remaining
+									; gates will be processed
+
 	bitf	interfaceGateIndex, #8000h
 	cc		findInterfaceGateCrossing, NTC
 
-	stl		A, interfaceFound		; store interface found flag so other
-									; functions can use it - if an iface gate is
-									; not active, a zero will be stored which
-									; indicates an interface was found anyway
-
 	bitf	flags1, #DAC_ENABLED	; process DAC if it is enabled
-	cc		processDAC, TC
+	cc		processDAC, TC			;  applies gain for each DAC gate to sample set
 
 	bitf	flags1, #DAC_ENABLED	; apply softwareGain to entire sample set
 	cc		applyGainToEntireSampleSet, NTC 		; if DAC not enabled
@@ -3775,6 +4202,8 @@ processGates:
 	stm		#9, AR5					; loop counter to process all gates
 
 $2:	ldm		AR5, A					; use loop count as gate index
+
+	pshm	AR5						; save loop counter as some calls below destroy AR5
 
 	call	pointToGateInfo			; point AR2 to the info for gate index in A
 									;  also stores index in A in scratch1
@@ -3796,6 +4225,14 @@ $2:	ldm		AR5, A					; use loop count as gate index
 
 	pshm	AR2						; save gate info pointer
 	call	findGateCrossing
+
+	andm	#~WALL_START_FOUND, processingFlags1 ; clear the found flag
+
+	xc		2, AEQ							; if A returned 0 from function call,
+											; set the found flag
+
+	orm		#WALL_START_FOUND, processingFlags1
+
 	popm	AR2						; restore gate info pointer
 	nop								; pipeline protection
 
@@ -3804,24 +4241,64 @@ $3:	bitf	*AR2, #GATE_WALL_END	; find crossing if gate is used for wall end
 
 	pshm	AR2						; save gate info pointer
 	call	findGateCrossing
+
+	andm	#~WALL_END_FOUND, processingFlags1 ; clear the found flag
+
+	xc		2, AEQ							; if A returned 0 from function call,
+											; set the found flag
+
+	orm		#WALL_END_FOUND, processingFlags1
+
 	popm	AR2						; restore gate info pointer
 	nop								; pipeline protection
 
-$4:	bitf	*AR2, #GATE_FOR_FLAW	; find peak if flaw gate
-	bc		$8, NTC
+$4:	bitf	*AR2, #GATE_FIND_PEAK	; find peak if bit set
+	bc		$5, NTC
 
 	pshm	AR2						; save gate info pointer
-	call	findGatePeak			; if gate and peak function are enabled
-									; will record signal peak in the gate
+	call	findGatePeak			; records signal peak in the gate									
 	popm	AR2						; restore gate info pointer
 	nop								; pipeline protection
 
-$8:	banz	$2,	*AR5-				; decrement gate index pointer
+$5:	bitf	*AR2, #GATE_INTEGRATE_ABOVE_GATE	; find integral above gate level if bit set
+	bc		$6, NTC
+
+	pshm	AR2						; save gate info pointer
+	call	calculateGateIntegral	; records integral of signal above gate level
+	popm	AR2						; restore gate info pointer
+	nop								; pipeline protection
+
+$6:	bitf	*AR2, #GATE_QUENCH_ON_OVERLIMIT	; skip all remaining gates if the integral
+	bc		$8, NTC							; above the gate is greater than trigger level
+											; WARNING: this section must be after the
+											; GATE_INTEGRATE_ABOVE_GATE section as it
+											; uses the result from that call
+
+	pshm	AR2						; save gate info pointer
+
+
+; debug mks -- check for over limit here
+
+	ld		#0, A	;debug mks - remove this after adding quench check
+
+	popm	AR2						; restore gate info pointer
+	nop								; pipeline protection
+
+	bc		$8, AEQ					; if A=0, continue processing remaining gates
+	popm	AR5						; if A!=0, stop processing gates
+	b		$9						;  all remaining gates are ignored
+
+$8:	popm	AR5						; restore loop counter
+	nop								; pipeline protection
+
+	banz	$2,	*AR5-				; decrement gate index pointer
 
 
 	; if either the wall start or end gates have not been set, then exit
-	; the entries are set to ffffh and the top bit will be set unless those
-	; entries have been changed to the index of a gate
+	; the entries default to ffffh and the top bit will be set unless those
+	; entries have been changed to the index of a wall gate
+
+$9:
 
 	bitf	wallStartGateIndex, #8000h
 	rc		TC
@@ -3829,8 +4306,18 @@ $8:	banz	$2,	*AR5-				; decrement gate index pointer
 	bitf	wallEndGateIndex, #8000h
 	rc		TC
 
-	ld		interfaceFound, A		; check to see if interface detected
-	rc		ANEQ					; exit if not
+	; check to see if the interface was found, the first wall reflection was
+	; found, and the second wall reflection was found
+	; exit if any were missed - the signal will be ignored
+
+	bitf	processingFlags1, #IFACE_FOUND		; interface check
+	rc		NTC
+
+	bitf	processingFlags1, #WALL_START_FOUND	; first reflection check
+	rc		NTC
+
+	bitf	processingFlags1, #WALL_END_FOUND	; second reflection check
+	rc		NTC
 
 	b		processWall				; calculate the wall thickness
 
@@ -3872,27 +4359,34 @@ getPeakData:
 	bitf	*AR4, #GATE_ACTIVE		; check if gate enabled
 	bc		$2, TC					; bit 0 set, send gate's data			
 
-	mar		*+AR4(9)				; move to next gate info
-	mar		*+AR5(12)				; move to next gate results
+	mar		*+AR4(GATE_PARAMS_SIZE)		; move to parameters for next gate
+	mar		*+AR5(GATE_RESULTS_SIZE)	; move to results for next gate
 	b		$1
 
 $2:
 
-	mar		*+AR2(8)				; track 8 bytes per gate to be sent
+	mar		*+AR2(8)				; count bytes sent (8 per gate for peak data)
 
 	ldu		*AR4, A					; get the gate flags and mask for the max/min
 	and		#GATE_MAX_MIN, A		; flag so it can be transferred to the results
 									; flag so the host will know gate type
+									; it is transferred repeatedly because the results
+									; flag is zeroed each time
 			
 	adds	*AR5, A					; add the gate type flag to the results flags
-	st		#0, *AR5				; zero the flags
+	st		#0, *AR5				; zero the results flags
+
+;debug mks -- dont' zero the results flag -- zero specific flags
+;such as hit/miss exceeded count
+;some flags need to be untouched such as GATE_EXCEEDED used by wall code
+;change this as soon as possible
 
 	stl		A, -8, *AR3+			; high byte
 	stl		A, *AR3+				; low byte
 
 	mar		*+AR5(8)				; move to the peak value
 
-	bitf	*AR4, #0x02				; function flags - check gate type
+	bitf	*AR4, #GATE_MAX_MIN		; function flags - check gate type
 									; need two instructions before xc (pipeline)
 
 	ld		#0x8000, B				; reset peak with min value to search for max
@@ -3920,9 +4414,9 @@ $2:
 	stl		A, -8, *AR3+			; high byte
 	stl		A, *AR3+				; low byte
 
-	mar		*+AR4(9)				; move to flags of next gate info
+	mar		*+AR4(GATE_PARAMS_SIZE)	; move to flags of next gate info
 
-	mar		*AR5+					; skip results ID of next gate
+	mar		*+AR5(GATE_RESULTS_SIZE-11)	; move to results flags of next gate
 
 $1: nop
 
@@ -4092,10 +4586,17 @@ $2:	add		#2, B					; increment the flag by 2 (each DSP gets every
 									; -24 for the save (shift=ASM-16)
 									; this shifts the highest byte to the lowest
 
-	; add one to the FPGA buffer to skip past the tracking word
+	; prepare pointers to source and destination buffers
 
-	stm		#FPGA_AD_SAMPLE_BUFFER+1, AR2	; point to start of buffers
+	stm		#FPGA_AD_SAMPLE_BUFFER, AR2		; point to tracking word at start of buffers
 	stm		#PROCESSED_SAMPLE_BUFFER, AR3	;(stm has no pipeline latency problem)
+
+	nop
+
+	ld		*AR2+, A				; load the tracking value for this sample set
+									; this can be linear or rotational position tracking
+									; depending on the system
+	stl		A, trackCount			; store it for tagging the peak data
 
 	ld		adSamplePackedSize, A 	; load size of FPGA buffer
 	sub		#1, A					; block repeat uses count-1
@@ -4151,14 +4652,7 @@ $1:
 
 	call	disableSerialTransmitter	; call this often
 
-	bitf	flags1, #ASCAN_FAST_ENABLED	; process AScan fast if enabled
-	cc		processAScanFast, TC		; (this will cause framesets to be skipped
-										;  due to the extensive processing required)
-										; ONLY use fast or slow version
-
-	bitf	flags1, #ASCAN_SLOW_ENABLED	; process AScan slow if enabled
-	cc		processAScanSlow, TC		; (this is safe to use during inspection)
-										; ONLY use fast or slow version
+	call	processAScan				; store an AScan dataset if enabled
 
 	call	disableSerialTransmitter	; call this often
 
@@ -4178,7 +4672,7 @@ $1:
 
 setupGatesDACs:
 
-	ld		#0, B					; used to zero variables
+	ld		#0h, B					; used to zero variables
 
 ; set the ID number for each gate and zero its values
 
@@ -4186,17 +4680,18 @@ setupGatesDACs:
 	ld		#0, A					; start with ID number 0
 	stm		#9, BRC					; do 10 gates/sections
 
-	rptb	$1
+	rptb	$2
+
+	stm		#GATE_PARAMS_SIZE-2, AR2 ; zeroes per entry -- 1 less to account for loop
+									 ; behavior, 1 more because ID fills a space
+
+
 	stl		A, *AR1+				; set the ID number
 	add		#1, A					; increment to next ID number
-	stl		B, *AR1+				; zero the rest of the entry
-	stl		B, *AR1+
-	stl		B, *AR1+
-	stl		B, *AR1+
-	stl		B, *AR1+
-	stl		B, *AR1+
-	stl		B, *AR1+
-$1:	stl		B, *AR1+
+$1:	stl		B, *AR1+				; zero the rest of the entry
+	banz	$1,	*AR2-
+
+$2: nop								; end of repeat block
 
 ; set the ID number for each DAC section and zero its values
 
@@ -4205,18 +4700,17 @@ $1:	stl		B, *AR1+
 	ld		#0, A					; start with ID number 0
 	stm		#9, BRC					; do 10 DAC sections
 
-	rptb	$2
+	rptb	$4
+
+	stm		#DAC_PARAMS_SIZE-2, AR2	; zeroes per entry -- 1 less to account for loop
+									; behavior, 1 more because ID fills a space
+
 	stl		A, *AR1+				; set the ID number
 	add		#1, A					; increment to next ID number
-	stl		B, *AR1+				; zero the rest of the entry
-	stl		B, *AR1+
-	stl		B, *AR1+
-	stl		B, *AR1+
-	stl		B, *AR1+
-	stl		B, *AR1+
-	stl		B, *AR1+
-$2:	stl		B, *AR1+
+$3:	stl		B, *AR1+				; zero the rest of the entry
+	banz	$3,	*AR2-
 
+$4: nop								; end of repeat block
 
 ; set the ID number for each gate results section and zero its values
 
@@ -4224,22 +4718,17 @@ $2:	stl		B, *AR1+
 	ld		#0, A					; start with ID number 0
 	stm		#9, BRC					; do 10 gate results entries
 
-	rptb	$3
+	rptb	$6
+
+	stm		#GATE_RESULTS_SIZE-2, AR2	; zeroes per entry -- 1 less to account for loop
+										; behavior, 1 more because ID fills a space
+
 	stl		A, *AR1+				; set the ID number
 	add		#1, A					; increment to next ID number
-	stl		B, *AR1+				; zero the rest of the entry
-	stl		B, *AR1+
-	stl		B, *AR1+
-	stl		B, *AR1+
-	stl		B, *AR1+
-	stl		B, *AR1+
-	stl		B, *AR1+
-	stl		B, *AR1+
-	stl		B, *AR1+
-	stl		B, *AR1+
-$3:	stl		B, *AR1+
+$5:	stl		B, *AR1+				; zero the rest of the entry
+	banz	$5,	*AR2-
 
-	ret
+$6: nop								; end of repeat block
 
 	.newblock						; allow re-use of $ variables
 
@@ -4335,7 +4824,7 @@ main:
 	st		#00h, frameCount0
 	st		#00h, frameSkipErrors
 	st		#00h, frameCountFlag
-	st		#00h, interfaceFound
+	st		#00h, processingFlags1
 	st		#00h, heartBeat
 	st		#00h, freeTimeCnt1
 	st		#00h, freeTimeCnt0
@@ -4385,6 +4874,12 @@ main:
 
 	call	setupDMA				; prepare DMA channel(s) for use
 
+	; clear data buffers used for averaging
+	ld		#8000h, A
+	stlm	A, AR1
+	rptz	A, #7fffh
+	stl		A, *AR1+
+
 	b		mainLoop				; start main execution loop
 
 ; end of main
@@ -4400,17 +4895,13 @@ mainLoop:
 
 $1:	
 
-;debug mks - remove this section
+;	call	processWall	;debug mks
 
-;	call	setAScanScale
-;	call	processAScanSlowInit
-;$2	call	processAScanSlow
-;	b		$2
+	.if 	debug					; see debugCode function for details
 
-;debug mks
+	call	debugCode
 
-
-
+	.endif
 
 	ld		#Variables1, DP			; point to Variables1 page
 
@@ -4432,11 +4923,6 @@ $1:
 	nop								; pipeline protection
 	nop
 	ld		*AR3, A					; get the flag set by the FPGA
-
-
-	; debug mks - use this line for simulator to force call
-	;  !!comment the line out when not simulating!!
-	;call	processSamples
 							
 	cc		processSamples, ANEQ	; process the new sample set if flag non-zero
 
@@ -4455,4 +4941,3 @@ $1:
 
 ; end of mainLoop
 ;-----------------------------------------------------------------------------
-

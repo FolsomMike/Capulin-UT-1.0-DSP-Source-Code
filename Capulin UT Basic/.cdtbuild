@@ -91,6 +91,12 @@
 </option>
 </tool>
 </toolChain>
+<<<<<<< HEAD
+=======
+<resourceConfiguration exclude="true" id="com.ti.ccstudio.buildDefinitions.C5400.Release.1601179288./Capulin UT Basic/Capulin UT DSP.cmd" name="Capulin UT DSP.cmd" rcbsApplicability="disable" resourcePath="/Capulin UT Basic/Capulin UT DSP.cmd" toolsToInvoke="com.ti.ccstudio.buildDefinitions.C5400_4.2.exe.linkerRelease.757124789./Capulin UT Basic/Capulin UT DSP.cmd">
+<tool id="com.ti.ccstudio.buildDefinitions.C5400_4.2.exe.linkerRelease.757124789./Capulin UT Basic/Capulin UT DSP.cmd" name="C5400 Linker" superClass="com.ti.ccstudio.buildDefinitions.C5400_4.2.exe.linkerRelease.757124789"/>
+</resourceConfiguration>
+>>>>>>> IntegratingGates
 </configuration>
 <macros/>
 </project>
