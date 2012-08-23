@@ -3203,7 +3203,7 @@ $4:
 	stl		A, *AR2
 	
 	sub		hitCount, A				; see if number of consecutive hits
-	bc		$7, ALT					; >= preset limit - skip if not
+	bc		$1, ALT					; >= preset limit - skip if not ;debug mks 823 was $1
 
 	st		#0,*AR2-				; clear the "exceeded" count	
 
@@ -3215,8 +3215,8 @@ $4:
 	;if the gate is an AScan trigger gate, set the flag to initiate the saving of an
 	;AScan dataset from the current samples
 
-$7:	bitf	scratch3, #GATE_TRIGGER_ASCAN_SAVE	; function flags - check if trigger gate
-	bc		$1, NTC								; don't trigger an AScan if not a trigger gate 
+;debug mks 823$7:	bitf	scratch3, #GATE_TRIGGER_ASCAN_SAVE	; function flags - check if trigger gate
+	;debug mks 823bc		$1, NTC								; don't trigger an AScan if not a trigger gate 
 
 	;debug mks 823 orm		#CREATE_ASCAN, flags1				; set flag -- create a new AScan dataset		
 
