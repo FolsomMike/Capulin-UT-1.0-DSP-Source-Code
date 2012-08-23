@@ -114,6 +114,8 @@ GATES_ENABLED				.equ	0x0002	; gates enabled flag
 DAC_ENABLED					.equ	0x0004	; DAC enabled flag
 ASCAN_FAST_ENABLED			.equ	0x0008	; AScan fast version enabled flag
 ASCAN_SLOW_ENABLED			.equ	0x0010	; AScan slow version enabled flag
+ASCAN_FREE_RUN				.equ	0x0020	; AScan runs free, not triggered by a gate
+CREATE_ASCAN				.equ	0x0040	; signals that a new AScan dataset should be created
 
 POSITIVE_HALF				.equ	0x0000
 NEGATIVE_HALF				.equ	0x0001
@@ -132,6 +134,7 @@ GATE_FIND_PEAK					.equ	0x0080
 GATE_FOR_INTERFACE				.equ	0x0100
 GATE_INTEGRATE_ABOVE_GATE		.equ	0x0200
 GATE_QUENCH_ON_OVERLIMIT		.equ	0x0400
+GATE_TRIGGER_ASCAN_SAVE			.equ	0x0800
 
 ;bit masks for gate results data flag
 
@@ -237,7 +240,10 @@ DSP_ACKNOWLEDGE					.equ	127
 	.bss	flags1,1				; bit 0 : serial port transmitter active
 									; bit 1 : Gates Enabled
 									; bit 2 : DAC Enabled
-									; bit 3 : AScan Enabled
+									; bit 3 : Fast AScan Enabled
+									; bit 4 : Slow AScan Enabled
+									; bit 5 : AScan free run, not triggered by a gate
+									; bit 6 : signals that a new AScan data set should be created
 
 	.bss	softwareGain,1			; gain multiplier for the signal
 	.bss	adSampleSize,1			; size of the unpacked data set from the FPGA
@@ -416,8 +422,8 @@ DSP_ACKNOWLEDGE					.equ	127
 	;
 	; bit 0 :	0 = gate is inactive
 	; 			1 = gate is active
-	; bit 1 :	0 = no secondary flag
-	;			1 = secondary flag if signal does NOT exceed gate
+	; bit 1 :	0 = no report on does NOT exceed
+	;			1 = report if signal does NOT exceed gate
 	;				(useful for loss of interface or backwall detection)
 	; bit 2 :	0 = flag if signal greater than gate (max gate)
 	; 			1 = flag if signal less than gate (min gate)
@@ -436,16 +442,19 @@ DSP_ACKNOWLEDGE					.equ	127
 	;			1 = search for a peak
 	; bit 8:	0 = this is not the interface gate
 	;			1 = this is the interface gate
-	; bit 9: 	unused
-	; bit 10:	unused
-	; bit 11:	unused
+	; bit 9:	0 = do not integrate above gate level
+	;			1 = integrate signal above gate level
+	; bit 10:	0 = do not quench signal on signal over limit
+	;			1 = quench signal on signal over limit
+	; bit 11: 	0 = this is not an AScan trigger gate 
+	;			1 = AScan sent if this gate exceeded (must have peak search enabled)
 	; bit 12:	unused
 	; bit 13:	unused
 	; bit 14:	lsb - gate data averaging buffer size
 	; bit 15:	msb - gate data averaging buffer size
 	;
-	; Caution 1: the max/min gate bit 2 matches the bit 2 position in the gate results
-	;            buffer flags so that the bit can easily be copied from the former to
+	; Caution 1: the max/min gate bit 2 above matches the bit 2 position in the gate results
+	;            buffer flags below so that the bit can easily be copied from the former to
 	;			 the latter before sending peak data to the host
 	;			 DO NOT MOVE unless all other code here and in the host is matched.
 	;
@@ -1446,6 +1455,12 @@ getAScanBlock:
 
 	ld		#Variables1, DP
 
+	bitf	flags1, #ASCAN_FREE_RUN	; only trigger another AScan dataset creation if in free run mode 
+	bc		$2, NTC
+
+	orm		#CREATE_ASCAN, flags1  
+
+$2:
 	mar		*AR3+%					; skip past the packet size byte
 	ld		*AR3+%, 8, A			; get high byte
 	adds	*AR3+%, A				; add in low byte
@@ -2255,6 +2270,76 @@ $4:	b		sendACK					; send back an ACK packet
 ;-----------------------------------------------------------------------------
 
 ;-----------------------------------------------------------------------------
+; processAScan
+;
+; Creates and stores an AScan dataset.  This is a compressed sample set of the
+; input buffer which is sent to the host upon request.  It is meant for
+; display in an oscilloscope type display.
+;
+; A dataset is only created if the CREATE_ASCAN bit in flags1 is set.  This
+; is set by the getAScanBlock function when the host requests the first AScan
+; block and by findGatePeak when the signal exceeds a trigger gate.
+;
+; wip mks -- Since the CREATE_ASCAN bit is set by the call for the first
+; block of the AScan, the AScan will generally be overwritten with a new
+; dataset before it is completely read as it takes a bit of time to read the
+; entire dataset in multiple blocks. The resulting glitches has not seemed
+; to be obvious in the display, but it would be better for the host to pass
+; a flag on the last block request to initiate the next AScan creation.
+;
+; The DSP's have multiple AScan modes -- Free Run and Triggered.
+;
+; Free Run Mode:
+;
+; Upon receiving a request for an AScan, the DSP immediately returns the
+; AScan data set created after the last request.  The DSP then creates a new
+; data set from whatever data is in the sample buffer to be ready for the next
+; AScan request.  Thus the display always reflects the data stored after the
+; previous request, but this is not obvious to the user.
+;
+; When viewing brief signal indications, the signal will not be very clear as
+; the indications will only occasionally flash into view when they happen to
+; coincide with the time of request.
+;
+; Triggered:
+;
+; The DSP will only create and store an AScan packet when any gate flagged as
+; a trigger gate is exceeded by the signal.  An AScan request is answered with
+; the latest packet created.  This allows the user to adjust the gate such that
+; only the signal of interest triggers a save, thus making sure that that
+; signal is clearly captured and displayed.
+;
+; The parameter pHardwareDelay is stored for use by the function which
+; processes the returned packet.
+;
+; See processAScanFast, processAScanSlow, and kBlock functions for more
+; details.
+;
+; On entry:
+;
+; DP should point to Variables1 page.
+;
+
+processAScan:
+
+	bitf	flags1, #CREATE_ASCAN		; do nothing if flag not set
+	rc		NTC
+
+	andm	#~CREATE_ASCAN, flags1		; clear the flag
+
+	bitf	flags1, #ASCAN_FAST_ENABLED	; process AScan fast if enabled
+	cc		processAScanFast, TC		; (this will cause framesets to be skipped
+										;  due to the extensive processing required)
+										; ONLY use fast or slow version
+
+	bitf	flags1, #ASCAN_SLOW_ENABLED	; process AScan slow if enabled
+	cc		processAScanSlow, TC		; (this is safe to use during inspection)
+										; ONLY use fast or slow version
+
+; end of processAScan
+;-----------------------------------------------------------------------------
+
+;-----------------------------------------------------------------------------
 ; processAScanFast
 ;
 ; (see also processAScanSlow)
@@ -2263,7 +2348,8 @@ $4:	b		sendACK					; send back an ACK packet
 ; to the host.
 ;
 ; There are two versions of this function - fast and slow.  The desired mode is
-; set by a message call. (wip mks -- this is not yet implemented)
+; set by a message call. (wip mks -- the ability to switch is not yet implemented)
+; (wip mks -- slow scan tested very little, seems a little too slow)
 ;
 ; The fast version processes the entire buffer at one time and returns the data
 ; set in large chunks as requested by the host.  This will usually cause
@@ -2866,6 +2952,12 @@ $1:	mvdd	*AR3+, *AR4+
 ; NOTE: The "adjusted start location" for the gate should be calculated
 ; before calling this function.
 ;
+; If the gate is flagged as an AScan trigger gate, the CREATE_ASCAN flag
+; will be set in flags1 so that an AScan data set will be created from
+; the current data set so the signal can be displayed by the host.
+;
+; On entry, DP should point to Variables1 page.
+;
 
 findGatePeak:
 
@@ -3072,7 +3164,7 @@ storeGatePeakResult:
 	ld		scratch2, B				; load the peak
 	ld		scratch4, A				; load the gate level
 
-	bitf	scratch3, #0x02			; function flags - check gate type
+	bitf	scratch3, #GATE_MAX_MIN	; function flags - check gate type
 	bc		$3, TC					; look for max if 0 or min if 1
 
 ; max gate - check if peak greater than gate level
@@ -3109,14 +3201,22 @@ $4:
 	stl		A, *AR2
 	
 	sub		hitCount, A				; see if number of consecutive hits
-	bc		$1, ALT					; >= preset limit - skip if not
+	bc		$7, ALT					; >= preset limit - skip if not
 
 	st		#0,*AR2-				; clear the "exceeded" count	
 
 	mar		*AR2-					; skip to the gate results flags
 
-	orm		#1, *AR2				; set bit 0 - signal exceeded gate
-									; hitCount number of times
+	orm		#HIT_COUNT_MET, *AR2	; set flag - signal exceeded gate
+ 									; hitCount number of times
+ 
+	;if the gate is an AScan trigger gate, set the flag to initiate the saving of an
+	;AScan dataset from the current samples
+
+$7:	bitf	scratch3, #GATE_TRIGGER_ASCAN_SAVE	; function flags - check if trigger gate
+	bc		$1, NTC								; don't trigger an AScan if not a trigger gate 
+
+	orm		#CREATE_ASCAN, flags1				; set flag -- create a new AScan dataset	
 
 $1:	b		checkForNewPeak
 
@@ -3150,7 +3250,7 @@ handleNoPeakCrossing:
 	mar		*AR2-					; skip to the gate results flags
 	mar		*AR2-
 
-	orm		#2, *AR2				; set bit 1 - signal missed the gate
+	orm		#MISS_COUNT_MET, *AR2	; set bit 1 - signal missed the gate
 									; missCount number of times
 
 $2:	b		checkForNewPeak
@@ -3167,7 +3267,7 @@ checkForNewPeak:
 	ld		*AR2, A					; load the stored peak
 	ld		scratch2, B				; load the new peak
 
-	bitf	scratch3, #0x02			; function flags - check gate type
+	bitf	scratch3, #GATE_MAX_MIN ; function flags - check gate type
 	bc		$5, TC					; look for max if 0 or min if 1
 
 ; max gate - check if peak greater than stored peak
@@ -3268,6 +3368,12 @@ findGateCrossing:
 	mar		*+AR2(-6)				; point back to gate function flags
 
 	bitf	*AR2, #0x02				; function flags - check gate type
+									; debug mks -- this should be looking at flag GATE_MIN_MAX
+									;   the 0x02 spot is almost always zero, so this ends up being a MAX gate
+									;   all the time.  BUT, if you do change it to GATE_MIN_MAX, Wall does not work anymore -- 
+									;   it will be offset and appear inverted.  This is because one of the wall gates (gate 3)
+									;   MUST be a MIN gate to collect min wall peaks. BUT this messes up th the crossing 
+									;	check here -- can't have the gate both ways for crossing and peak detection.
 
 	bc		$2, TC					; look for max if 0 or min if 1
 
@@ -3507,7 +3613,7 @@ findGateCrossingAfterGain:
 
 	mar		*+AR2(-6)				; point back to gate function flags
 
-	bitf	*AR2, #0x02				; function flags - check gate type
+	bitf	*AR2, #GATE_MAX_MIN		; function flags - check gate type
 
 	bc		$2, TC					; look for max if 0 or min if 1
 
@@ -4062,7 +4168,7 @@ $8:	banz	$2,	*AR5-				; decrement DAC gate index pointer
 ; positions, finding signal crossings if enabled, max peaks if enabled.
 ;
 ;
-; DP should point to Variables1 page.
+; On entry, DP should point to Variables1 page.
 ;
 ; The interfaceGateIndex, wallStartGateIndex, wallEndGateIndex variables
 ; are set to ffffh if those gates are not set up.  If they are setup, the
@@ -4286,7 +4392,7 @@ $2:
 
 	mar		*+AR5(8)				; move to the peak value
 
-	bitf	*AR4, #0x02				; function flags - check gate type
+	bitf	*AR4, #GATE_MAX_MIN		; function flags - check gate type
 									; need two instructions before xc (pipeline)
 
 	ld		#0x8000, B				; reset peak with min value to search for max
@@ -4552,14 +4658,7 @@ $1:
 
 	call	disableSerialTransmitter	; call this often
 
-	bitf	flags1, #ASCAN_FAST_ENABLED	; process AScan fast if enabled
-	cc		processAScanFast, TC		; (this will cause framesets to be skipped
-										;  due to the extensive processing required)
-										; ONLY use fast or slow version
-
-	bitf	flags1, #ASCAN_SLOW_ENABLED	; process AScan slow if enabled
-	cc		processAScanSlow, TC		; (this is safe to use during inspection)
-										; ONLY use fast or slow version
+	call	processAScan				; store an AScan dataset if enabled
 
 	call	disableSerialTransmitter	; call this often
 
