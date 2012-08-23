@@ -1461,7 +1461,7 @@ getAScanBlock:
 	bitf	flags1, #ASCAN_FREE_RUN	; only trigger another AScan dataset creation if in free run mode 
 	bc		$2, NTC
 
-	orm		#CREATE_ASCAN, flags1  
+;debug mks 823	orm		#CREATE_ASCAN, flags1  
 
 $2:
 	mar		*AR3+%					; skip past the packet size byte
@@ -3218,7 +3218,7 @@ $4:
 $7:	bitf	scratch3, #GATE_TRIGGER_ASCAN_SAVE	; function flags - check if trigger gate
 	bc		$1, NTC								; don't trigger an AScan if not a trigger gate 
 
-	orm		#CREATE_ASCAN, flags1				; set flag -- create a new AScan dataset		
+	;debug mks 823 orm		#CREATE_ASCAN, flags1				; set flag -- create a new AScan dataset		
 
 $1:	b		checkForNewPeak
 
@@ -4652,7 +4652,7 @@ $1:
 
 	call	disableSerialTransmitter	; call this often
 
-	call	processAScan				; store an AScan dataset if enabled
+;debug mks 823	call	processAScan				; store an AScan dataset if enabled
 
 	call	disableSerialTransmitter	; call this often
 
