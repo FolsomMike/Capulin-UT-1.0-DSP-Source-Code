@@ -75,21 +75,19 @@
 
 	.include	"TMS320VC5441.asm"
 
-	.global	pointToGateInfo
-	.global	calculateGateIntegral
-	.global	BRC
+	; Use .global with a label here to have the label and its address listed
+	;  in the .map file.
+
 	.global	Variables1
 	.global	scratch1
-	.global	debugCode
+	.global	scratch2
+	.global	scratch3
+	.global	scratch4	
 
-	.global	setADSampleSize
-	.global fpgaADSampleBufEnd
-	.global SERIAL_PORT_RCV_BUFFER
-	.global	FPGA_AD_SAMPLE_BUFFER
-	.global	GATES_ENABLED
-	.global	setFlags1
-	.global	getPeakData
-
+	.global wallPeakBuffer
+	.global gateBuffer	
+	.global gateResultsBuffer
+	
 ;-----------------------------------------------------------------------------
 ; Miscellaneous Defines
 ;
@@ -135,6 +133,7 @@ GATE_FOR_INTERFACE				.equ	0x0100
 GATE_INTEGRATE_ABOVE_GATE		.equ	0x0200
 GATE_QUENCH_ON_OVERLIMIT		.equ	0x0400
 GATE_TRIGGER_ASCAN_SAVE			.equ	0x0800
+SUBSEQUENT_SHOT_DIFFERENTIAL	.equ	0x1000
 
 ;bit masks for gate results data flag
 
@@ -153,7 +152,7 @@ WALL_END_FOUND				.equ	0x0004
 ;WARNING: Adjust these values any time you add more bytes to the buffers.
 
 GATE_PARAMS_SIZE			.equ	14
-GATE_RESULTS_SIZE			.equ	12
+GATE_RESULTS_SIZE			.equ	13
 DAC_PARAMS_SIZE				.equ	9
 
 ; end of Miscellaneous Defines
@@ -308,6 +307,7 @@ DSP_ACKNOWLEDGE					.equ	127
 	.bss	scratch4,1				; scratch variable for any temporary use
 	.bss	scratch5,1				; scratch variable for any temporary use
 
+	;---------------------------------------------------------------------------------
 	; Wall Peak Buffer Notes
 	;
 	; This buffer holds data for the crossing points of the two gates used
@@ -370,10 +370,13 @@ DSP_ACKNOWLEDGE					.equ	127
 
 	.bss	wallPeakBuffer, 29
 
+	;---------------------------------------------------------------------------------
+
+	;---------------------------------------------------------------------------------
 	; Gate Buffer Notes
 	;
 	; The gatesBuffer section is for storing 10 gates.
-	; Each gate is defined by 14 words each:
+	; Each gate is defined by the data words below:
 	;
 	; word  0: first gate ID number (if interface gate is in use, it must always be gate 0)
 	;			   (upper two bits used to store pointer to next averaging buffer)
@@ -448,12 +451,11 @@ DSP_ACKNOWLEDGE					.equ	127
 	;			1 = quench signal on signal over limit
 	; bit 11: 	0 = this is not an AScan trigger gate 
 	;			1 = AScan sent if this gate exceeded (must have peak search enabled)
-	; bit 12:	unused
+	; bit 12:	0 = subsequent differential noise cancellation inactive
+	;			1 = subsequent differential noise cancellation active
 	; bit 13:	unused
 	; bit 14:	lsb - gate data averaging buffer size
 	; bit 15:	msb - gate data averaging buffer size
-	;
-	; -----------------------------------------------
 	;
 	; Caution 1: the max/min gate bit 2 above matches the bit 2 position in the gate results
 	;            buffer flags below so that the bit can easily be copied from the former to
@@ -463,11 +465,14 @@ DSP_ACKNOWLEDGE					.equ	127
 
 	.bss	gateBuffer, GATE_PARAMS_SIZE * 10;
 
+	;---------------------------------------------------------------------------------
+
+	;---------------------------------------------------------------------------------
 	; Gate Results Buffer Notes
 	;
 	; The gateResultsBuffer section is for storing the data collected
 	; for 10 gates.
-	; Each gate is defined by 12 words each:
+	; Each gate is defined by the data words below:
 	;
 	; word 0: first gate ID number
 	; word 1: gate result flags (see below)
@@ -481,9 +486,13 @@ DSP_ACKNOWLEDGE					.equ	127
 	; word 9: peak in the gate (max for a max gate, min for a min)
 	; word 10: peak buffer address
 	; word 11: peak tracking location
+	; word 12: gate peak value from previous data set
 	; word 0: second gate ID number
 	; word 1: ...
 	;	...remainder of the gates...
+	;
+	; WARNING: if you add more entries to this buffer, you must adjust the
+	;           GATE_RESULTS_SIZE constant.
 	;
 	; Bit assignments for the Gate Result flags:
 	;
@@ -522,6 +531,9 @@ DSP_ACKNOWLEDGE					.equ	127
 
 	.bss	gateResultsBuffer, GATE_RESULTS_SIZE * 10
 
+	;---------------------------------------------------------------------------------
+	
+	;---------------------------------------------------------------------------------
 	; DAC Buffer Notes
 	;
 	; The dacBuffer section is for storing 10 DAC sections (also called gates).
@@ -544,6 +556,9 @@ DSP_ACKNOWLEDGE					.equ	127
 	; word 0: second section ID number
 	; word 1: ...
 	;	...remainder of the gates...
+	;
+	; WARNING: if you add more entries to this buffer, you must adjust the
+	;           DAC_PARAMS_SIZE constant.
 	;
 	; All values are defined in sample counts - i.e a width of 3 is a width
 	; of 3 A/D sample counts.
@@ -1461,7 +1476,7 @@ getAScanBlock:
 	bitf	flags1, #ASCAN_FREE_RUN	; only trigger another AScan dataset creation if in free run mode 
 	bc		$2, NTC
 
-;debug mks 823	orm		#CREATE_ASCAN, flags1  
+	orm		#CREATE_ASCAN, flags1  
 
 $2:
 	mar		*AR3+%					; skip past the packet size byte
@@ -3163,6 +3178,24 @@ storeGatePeakResult:
 	ld		*+AR2(+5), A			; load the gate level
 	stl		A, scratch4				; store the gate level
 
+	; if subsequent differential noise cancellation mode is active,
+	; subtract the peak from the peak of the previous shot (will actually
+	; be two shots ago as each DSP core handles every other shot).
+
+	bitf	scratch3, #SUBSEQUENT_SHOT_DIFFERENTIAL		; gate function flags
+	bc		$8, NTC										; check for subsequent differential mode
+
+	call	pointToGateResults		; point AR2 to the entry for gate in scratch1
+
+	mar		*+AR2(11)				; move to gate peak value from previous data set 
+	ld		scratch2, A				; load the current peak for storing
+	ld		scratch2, B				; load the current peak for subtracting
+
+	sub		*AR2, B					; subtract the previous peak from the current peak
+	stl		B, scratch2				; save the modified current peak
+	stl		A, *AR2					; save the unmodified current peak for use on next shot
+
+$8:
 	ld		scratch2, B				; load the peak
 	ld		scratch4, A				; load the gate level
 
@@ -3172,7 +3205,7 @@ storeGatePeakResult:
 ; max gate - check if peak greater than gate level
 
 	max		A						; peak >= gate level?
-	bc		$4, C					; yes if C set, jump to inc hitCount
+	bc		handlePeakCrossing, C	; yes if C set, jump to inc hitCount
 	b		handleNoPeakCrossing
 
 $3:	
@@ -3180,10 +3213,10 @@ $3:
 ; min gate - check if peak less than gate level
 
 	min		A						; peak <= gate level?
-	bc		$4, C					; yes if C set, jump to inc hitCount
+	bc		handlePeakCrossing, C	; yes if C set, jump to inc hitCount
 	b		handleNoPeakCrossing
 
-$4:
+handlePeakCrossing:
 
 ; since the peak signal exceeded the gate, clear the "not exceeded" count
 ; and increment the "exceeded" count
@@ -3203,22 +3236,22 @@ $4:
 	stl		A, *AR2
 	
 	sub		hitCount, A				; see if number of consecutive hits
-	bc		$1, ALT					; >= preset limit - skip if not ;debug mks 823 was $1
+	bc		$7, ALT					; >= preset limit - skip if not
 
 	st		#0,*AR2-				; clear the "exceeded" count	
 
 	mar		*AR2-					; skip to the gate results flags
 
 	orm		#HIT_COUNT_MET, *AR2	; set flag - signal exceeded gate
-									; hitCount number of times
-
+ 									; hitCount number of times
+ 
 	;if the gate is an AScan trigger gate, set the flag to initiate the saving of an
 	;AScan dataset from the current samples
 
-;debug mks 823$7:	bitf	scratch3, #GATE_TRIGGER_ASCAN_SAVE	; function flags - check if trigger gate
-	;debug mks 823bc		$1, NTC								; don't trigger an AScan if not a trigger gate 
+$7:	bitf	scratch3, #GATE_TRIGGER_ASCAN_SAVE	; function flags - check if trigger gate
+	bc		$1, NTC								; don't trigger an AScan if not a trigger gate 
 
-	;debug mks 823 orm		#CREATE_ASCAN, flags1				; set flag -- create a new AScan dataset		
+	orm		#CREATE_ASCAN, flags1				; set flag -- create a new AScan dataset
 
 $1:	b		checkForNewPeak
 
@@ -3269,7 +3302,7 @@ checkForNewPeak:
 	ld		*AR2, A					; load the stored peak
 	ld		scratch2, B				; load the new peak
 
-	bitf	scratch3, #GATE_MAX_MIN	; function flags - check gate type
+	bitf	scratch3, #GATE_MAX_MIN ; function flags - check gate type
 	bc		$5, TC					; look for max if 0 or min if 1
 
 ; max gate - check if peak greater than stored peak
@@ -3369,7 +3402,14 @@ findGateCrossing:
 
 	mar		*+AR2(-6)				; point back to gate function flags
 
-	bitf	*AR2, #GATE_MAX_MIN		; function flags - check gate type
+	bitf	*AR2, #0x02				; function flags - check gate type
+									; debug mks -- this should be looking at flag GATE_MIN_MAX
+									;   the 0x02 spot is almost always zero, so this ends up being a MAX gate
+									;   all the time.  BUT, if you do change it to GATE_MIN_MAX, Wall does not work anymore -- 
+									;   it will be offset and appear inverted.  This is because one of the wall gates (gate 3)
+									;   MUST be a MIN gate to collect min wall peaks. BUT this messes up th the crossing 
+									;	check here -- can't have the gate both ways for crossing and peak detection.
+
 	bc		$2, TC					; look for max if 0 or min if 1
 
 	; max gate - look for signal crossing above the gate
@@ -3752,7 +3792,7 @@ pointToGateResults:
 	ld		#gateResultsBuffer, B	; start of gate results buffer
 
 									; gate index number already in scratch1
-	stm		#12, T					; number of words per gate results entry
+	stm		#GATE_RESULTS_SIZE, T	; number of words per gate results entry
 	mpyu	scratch1, A				; multiply gate number by words per
 									; gate to point to gate's results area
 
@@ -4652,7 +4692,7 @@ $1:
 
 	call	disableSerialTransmitter	; call this often
 
-;debug mks 823	call	processAScan				; store an AScan dataset if enabled
+	call	processAScan				; store an AScan dataset if enabled
 
 	call	disableSerialTransmitter	; call this often
 
