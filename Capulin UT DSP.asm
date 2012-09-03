@@ -1225,6 +1225,9 @@ $1:	ldu		*AR3+%, A				; reload core ID from packet
 
 	sub		#DSP_CLEAR_FLAGS1, 0, A, B
 	bc		clearFlags1, BEQ
+	
+	sub		#DSP_SET_GATE_SIG_PROC_THRESHOLD, 0, A, B
+	bc		setGateSignalProcessingThreshold, BEQ
 
 	sub		#DSP_SET_GAIN_CMD, 0, A, B
 	bc		setSoftwareGain, BEQ	
@@ -1346,8 +1349,13 @@ $2:
 ;-----------------------------------------------------------------------------
 ; sendPacket
 ;
-; Sends a packet via the serial port.  Enables the serial port, sends the
-; data in the buffer, disables the port.
+; Sends a packet via the serial port. The serial port should already have
+; been enabled and the data placed in the buffer. This function sets up the
+; DMA channel to start sending the data.  The serial port is then disabled
+; elsewhere upon completion so that other DSP cores can use it.
+;
+; IMPORTANT: See responseDelay header notes for info regarding timing delays
+;	required to avoid collision between the DSP cores sharing the port.
 ;
 ; On entry, data to be sent should be stored in SERIAL_PORT_XMT_BUFFER 
 ; starting at array position 5.  The length of the data should be stored
@@ -1411,7 +1419,7 @@ sendPacket:
 ; can cause another active channel to also be enabled.  If the other
 ; active channel finishes and clears its DE bit at the same time as
 ; an ORM instruction is used to enable different channel, the ORM
-; can overwrite the cleared bit the other channel.
+; can overwrite the cleared bit for the other channel.
 ; Currently, this code does not have a problem because the only other
 ; active channel is the serial port read DMA which is always active
 ; anyway since it is in ABU mode.
@@ -1628,8 +1636,13 @@ $1:
 ; is the low byte of the resync error count so the host can easily track
 ; the number of reSync errors that have occurred.
 ;
+; IMPORTANT: See responseDelay header notes for info regarding timing delays
+;	required to avoid collision between the DSP cores sharing the port.
+;
 
 sendACK:
+
+	call	responseDelay			; see notes in responseDelay for info
 
 	ld		#Variables1, DP
 
@@ -1674,6 +1687,8 @@ getStatus:
 	ld		#2, A					; size of data in buffer
 
 	ld		#DSP_GET_STATUS_CMD, B	; load message ID into B before calling
+	
+	call	responseDelay			; see notes in responseDelay for info
 	
 	b		sendPacket				; send the data in a packet via serial
 
@@ -1748,6 +1763,28 @@ clearFlags1:
 	.newblock						; allow re-use of $ variables
 
 ; end of clearFlags1
+;-----------------------------------------------------------------------------
+
+;-----------------------------------------------------------------------------
+; setGateSignalProcessingThreshold
+;
+; Sets a value to be used by the current signal processing method for
+; establishing thresholds, applying gain, choosing number of samples to
+; average, etc..  Each processing method has its own use for the value.
+;
+; On entry, AR3 should be pointing to word 2 (received packet data size) of 
+; the received packet.
+;
+
+setGateSignalProcessingThreshold:
+
+	; debug mks -- does nothing, needs to be completed
+
+	b		sendACK					; send back an ACK packet
+
+	.newblock						; allow re-use of $ variables
+
+; end of setGateSignalProcessingThreshold
 ;-----------------------------------------------------------------------------
 
 ;-----------------------------------------------------------------------------
@@ -1988,6 +2025,127 @@ setADSampleSize:
 	.newblock						; allow re-use of $ variables
 
 ; end of setADSampleSize
+;-----------------------------------------------------------------------------
+
+;-----------------------------------------------------------------------------
+; responseDelay
+;
+; Uses a string of nop codes to create a delay.  The nops are used because
+; they require no register modifications.
+;
+; Shared Serial Port Timing Notes:
+;
+; The four DSP cores share the muxed serial port used to transmit data to
+; the FPGA.  After the DMA begins transmitting, other functions begin
+; monitoring the DMA and serial port transmit buffer status -- when the
+; transmission is complete, the port is released so another DSP core can use
+; it.  The release time varies depending on what the core is doing. It appears
+; that responding functions with very short execution time can return a packet
+; too quickly for the controlling core to release the port after its own
+; transmission.
+;
+; Oddly enough, increasing the AScan time to maximum actually reduces the
+; collisions as the AScan processing seems to ensure the serial port release
+; check code gets called more often.
+;
+; It was considered to have the host wait for an ack packet after each
+; transmission to increase the timing, but some calls such as for AScan
+; packets don't wait for an ack in order to speed up the display.  Also, this
+; would have drastically increased the overhead for all calls.
+;
+; The current best solution is for all of the response functions which have
+; a very quick response time to insert a delay such as the one provided
+; by this function before beginning transmission of the return packet.  This
+; delay is no worse than that probably encountered by getPeakData which the
+; code must accommodate anyway.
+;
+
+responseDelay:
+
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+
+	ret
+
+; end of responseDelay
 ;-----------------------------------------------------------------------------
 
 ;-----------------------------------------------------------------------------
@@ -4842,13 +5000,14 @@ main:
 
 	stm		endOfStack, SP			; setup the stack pointer
 
-	;debug mks - for simulation, the next line can be run the first time
-	;            to clear the variables and set the index numbers for readability
-	;            but then it may be commented out for subsequent program runs
-	;            is data is loaded from disk for the Gates & DACs - otherwise
-	;            this next call will erase the data each time and it will have to
-	;			 be reloaded
+	;debug mks - for simulation, block out the next line after running the
+	;		     code once -- the first time is useful to clear the variables
+	;			 and set the index numbers for readability but then it may be
+	;			 commented out for subsequent program runs if data is loaded from
+	;			 disk for the Gates & DACs - otherwise this next call will erase
+	;			 the data each time and it will have to be reloaded repeatedly
 	;  !!re-insert the line when not simulating!!
+	;  Clarification -- you need the next line for actual code!
 
 	call	setupGatesDACs			; setup gate and DAC variables
 
@@ -4935,7 +5094,8 @@ mainLoop:
 
 $1:	
 
-;	call	processWall	;debug mks
+	; use this call for debugging the wall code
+	;	call	processWall
 
 	.if 	debug					; see debugCode function for details
 
