@@ -139,7 +139,8 @@ SUBSEQUENT_SHOT_DIFFERENTIAL	.equ	0x1000
 
 HIT_COUNT_MET			.equ	0x0001
 MISS_COUNT_MET			.equ	0x0002
-GATE_EXCEEDED			.equ	0x0004
+GATE_MAX_MIN			.equ	0x0004
+GATE_EXCEEDED			.equ	0x0008
 
 ;bit masks for processingFlags1
 
@@ -378,7 +379,7 @@ DSP_ACKNOWLEDGE			.equ	127
 	; The gatesBuffer section is for storing 10 gates.
 	; Each gate is defined by the data words below:
 	;
-	; word  0: first gate ID number (if interface gate is in use, it must always be gate 0)
+	; word  0: first gate ID number
 	;           (upper two bits used to store pointer to next averaging buffer)
 	; word  1: gate function flags (see below)
 	; word  2: gate start location MSW
@@ -402,9 +403,6 @@ DSP_ACKNOWLEDGE			.equ	127
 	;
 	; All values are defined in sample counts - i.e a width of 3 is a width
 	; of 3 A/D sample counts.
-	;
-	; If interface gate is in use, it must always be the first gate.  The
-	; section numbers are useful for debugging purposes if nothing else.
 	;
 	; If interface tracking is off, the start position is based from the
 	; initial pulse.  Since the FPGA delays the start of sample collection
@@ -431,16 +429,15 @@ DSP_ACKNOWLEDGE			.equ	127
 	; bit 2 :	0 = flag if signal greater than gate (max gate)
 	; 		1 = flag if signal less than gate (min gate)
 	;                (see Caution 1 below)
-	; bit 3:	0 = not used for wall measurement
+	; bit 3:	0 = not a wall measurement gate
 	;		1 = used as first gate for wall measurement
-	; bit 4:	0 = not used for wall measurement
+	; bit 4:	0 = not a wall measurement gate
 	;		1 = used as second gate for wall measurement
 	; bit 5:	0 = do not search for signal crossing
 	;		1 = search for signal crossing
-	;		 (must be set if gate is interface or bits 3 or 4 set)
 	; bit 6:	0 = gate does not use interface tracking
 	;		1 = gate uses interface tracking
-	;		 (interface gate itself must NOT use tracking)
+	;		 (ignored for interface gate; it never tracks)
 	; bit 7:	0 = do not search for a peak
 	;		1 = search for a peak
 	; bit 8:	0 = this is not the interface gate
@@ -457,10 +454,11 @@ DSP_ACKNOWLEDGE			.equ	127
 	; bit 14:	lsb - gate data averaging buffer size
 	; bit 15:	msb - gate data averaging buffer size
 	;
-	; Caution 1: the max/min gate bit 2 above matches the bit 2 position in the gate results
-	;            buffer flags below so that the bit can easily be copied from the former to
-	;            the latter before sending peak data to the host
-	;	     DO NOT MOVE unless all other code here and in the host is matched.
+	; Caution 1: the GATE_MAX_MIN bit in the gate flag above matches the
+        ;            GATE_MAX_MIN flag position in the gate results buffer
+	;            flags below so that the bit can easily be copied from the
+        ;            former to the latter before sending peak data to the host
+	;	     DO NOT MOVE without adjusting all code as necessary.
 	;
 
 	.bss	gateBuffer, GATE_PARAMS_SIZE * 10;
@@ -502,7 +500,7 @@ DSP_ACKNOWLEDGE			.equ	127
 	; 		1 = signal failed to exceed gate more than missCount times consecutively
 	; bit 2:	0 = max gate, higher values are worst case
 	; 		1 = min gate, lower values are worst case
-	;		 (see Caution 2 below)
+	;		 (see Caution 1 above)
 	;
 	; Notes:
 	;
@@ -522,11 +520,6 @@ DSP_ACKNOWLEDGE			.equ	127
 	; Each core processes every other transducer pulse, so a hitCount of
 	; two requires only that violations occur on shots 1 and 3 with the
 	; second and forth shot being handled by another DSP.
-	;
-	; Caution 2: the max/min gate bit 2 matches the bit 2 position in the gate
-	;            buffer flags so that the bit can easily be copied from the latter to
-	;            the former before sending peak data to the host
-	;            DO NOT MOVE unless all other code here and in the host is matched.
 	;
 
 	.bss	gateResultsBuffer, GATE_RESULTS_SIZE * 10
@@ -2378,12 +2371,19 @@ setDACFlags:            ; call here to set DAC function flags
 
 $1:	ld      *AR3+%, 8, A            ; get high byte
 	adds    *AR3-%, A               ; add in low byte
-	stl     A, *AR2                 ; store the function flags
+	stl     A, *AR2                 ; store the gate flags
 
 	mar     *AR3-%                  ; move back to index number
 	ld      *AR3, A                 ; reload the gate index number
                                         ; don't use % (circular buffer) token here as
                                         ; it is not needed if not inc/decrementing
+
+        ;NOTE:  the following is being done for Gate flags and DAC gate flags.
+        ;       it only makes sense for Gate flags. Since most DAC flags are
+        ;       currently zeroed (right?), the following should be ignored. If
+        ;       these DAC flags are ever to be used, the function needs to be
+        ;       separated for Gate and DAC Gate flag setting else the follwoing
+        ;       will cause problems.
 
 	bitf	*AR2, #GATE_FOR_INTERFACE   ; check if this is the interface gate
 	bc      $2, NTC
@@ -2405,13 +2405,13 @@ $2:	bitf    *AR2, #GATE_WALL_START  ; check if this is the wall start gate
 	stl     A, wallStartGateInfo
 
 	mar     *+AR2(+5)               ; skip to the gate level
-	ld      *AR2, A                 ; store the gate level in variable
+	ld      *AR2, A                 ; copy for easy use by processing
 	stl     A, wallStartGateLevel
 
 	call    pointToGateResults      ; point AR2 to gate results (index in scratch1)
 
 	ldm     AR2, A                  ; store pointer to gate results in variable
-	stl     A, wallStartGateResults
+	stl     A, wallStartGateResults ; for easy use by processing
 
 	b       $4
 
@@ -2428,13 +2428,13 @@ $3:     bitf    *AR2, #GATE_WALL_END    ; check if this is the wall end gate
 	stl     A, wallEndGateInfo
 
 	mar     *+AR2(+5)               ; skip to the gate level
-	ld      *AR2, A                 ; store the gate level in variable
+	ld      *AR2, A                 ; copy for easy use by processing
 	stl     A, wallEndGateLevel
 
 	call	pointToGateResults      ; point AR2 to gate results (index in scratch1)
 
 	ldm     AR2, A                  ; store pointer to gate results in variable
-	stl     A, wallEndGateResults
+	stl     A, wallEndGateResults   ; for easy use by processing
 
 	b       $4
 
@@ -3118,7 +3118,8 @@ $1:	mvdd    *AR3+, *AR4+
 ; NOTE: If the signal equals the gate level, it is considered to exceed it.
 ;
 ; If the gate is a "max" gate, the signal must go higher than the gate's
-; height.  If it is a "min" gate, the signal must go lower.
+; height to flag.  If it is a "min" gate, the signal must go lower than the
+; gate to flag.
 ;
 ; If the peak is higher than the gate level, the gate's hit counter value
 ; in the results buffer is incremented.  If the hit count value reaches
@@ -3166,7 +3167,8 @@ findGatePeak:
                                         ; first sample in AR4
                                         ; NOTE: AR4 will actually be loaded
                                         ; with the address + 3 - this must
-                                        ; be adjusted back before use
+                                        ; be adjusted back when finished to
+                                        ; get the location of the found peak
 
 	mar     *+AR2(-5)               ; point back to gate function flags
 
@@ -3175,18 +3177,18 @@ findGatePeak:
 
 ; max gate - look for maximum signal in the gate
 
-	ld      #0x8000, 16, B          ; preload B with min value to ignore
-                                        ; the first test
+	ld      #0x8000, 16, B          ; preload B with min value to force
+                                        ; save of first value preloaded in A
 
 	rptb    $3
 
-	max     A                       ; compare sample with gate height in A
+	max     A                       ; compare sample with previous max
                                         ; the new max will replace old max in A
 
 	nop                             ; avoid pipeline conflict with xc
 	nop                             ; two words between test instr and xc
 
-	xc      1, C                    ; if sample in B > height in A, then
+	xc      1, C                    ; if sample in B > prev peak in A, then
 	mvmm    AR3, AR4                ; store the buffer address of the new
                                         ; max
                                         ; NOTE: AR4 will actually be loaded
@@ -3199,7 +3201,7 @@ $3:	ld      *AR3+0, B               ; get next sample
 
 
         ; look at two skipped samples before and two after peak to find the
-        ; exact peak - the two after may be slightly passed the gate, but
+        ; exact peak - the two after may be slightly past the gate, but
         ; so close as not to matter
 
 	mar     *+AR4(-2)               ; AR4 points 3 points ahead of the peak
@@ -3230,7 +3232,7 @@ $3:	ld      *AR3+0, B               ; get next sample
 	max     A                       ; compare with peak in A
 	nop                             ; avoid pipeline conflict with xc
 	nop                             ; two words between test instr and xc
-	xc      1, C                    ; if sample in B > height in A, then
+	xc      1, C                    ; if sample in A > height in B, then
 	mvmm    AR3, AR4                ; store the buffer address of the new max
 
 	ld      *AR3+, B                ; get sample
@@ -3249,19 +3251,19 @@ $2:
 
 ; min gate - look for minimum signal in the gate
 
-	ld      #0x7fff, 16, B          ; preload B with max value to ignore
-                                        ; the first test
+	ld      #0x7fff, 16, B          ; preload B with max value to force
+                                        ; save of new value on first min test
 	rptb    $4
 
-	min     A                       ; compare sample with gate height in A
-                                        ; the new max will replace old max in A
+	min     A                       ; compare sample with previous min
+                                        ; the new min will replace old min in A
 
 	nop                             ; avoid pipeline conflict with xc
 	nop                             ; two words between test instr and xc
 
-	xc      1, C                    ; if sample in B > height in A, then
+	xc      1, C                    ; if sample in A < prev peak in B, then
 	mvmm    AR3, AR4		; store the buffer address of the new
-                                        ; max
+                                        ; min
                                         ; NOTE: AR4 will actually be loaded
                                         ; with the address + 3 - this must
                                         ; be adjusted back before use
@@ -3560,13 +3562,9 @@ findGateCrossing:
 
 	mar     *+AR2(-6)               ; point back to gate function flags
 
-	bitf    *AR2, #0x02             ; function flags - check gate type
-                                        ; debug mks -- this should be looking at flag GATE_MIN_MAX
-                                        ;   the 0x02 spot is almost always zero, so this ends up being a MAX gate
-                                        ;   all the time.  BUT, if you do change it to GATE_MIN_MAX, Wall does not work anymore --
-                                        ;   it will be offset and appear inverted.  This is because one of the wall gates (gate 3)
-                                        ;   MUST be a MIN gate to collect min wall peaks. BUT this messes up th the crossing
-                                        ;	check here -- can't have the gate both ways for crossing and peak detection.
+	bitf    *AR2, #GATE_MAX_MIN     ; function flags - check gate type
+                                        ; for wall, both the start and the
+                                        ; end gate should be MAX gates
 
 	bc      $2, TC                  ; look for max if 0 or min if 1
 
@@ -3970,8 +3968,9 @@ pointToGateResults:
 ;-----------------------------------------------------------------------------
 ; findInterfaceGateCrossing
 ;
-; Calculates the adjusted gate start location and then calls findGateCrossing
-; to find the location where the signal exceeds the gate's level.
+; Calculates the adjusted gate start location and then calls
+; findGateCrossingAfterGain to find the location where the signal exceeds the
+; gate's level.
 ;
 ; On return:
 ;  crossing found: A = 0 and IFACE_FOUND flag set in processingFlags1
@@ -4193,7 +4192,7 @@ $1:
 	; check for new min peak
 
 	ld      *+AR1(+11), B           ; load the old min peak
-	mvmm    AR1, AR2                ; point AR2 at the max peak variables
+	mvmm    AR1, AR2                ; point AR2 at the max peak variables debug mks -- should this say min peak variables?
 	ld      *+AR1(-11), A           ; load new value
 
 	min     B                       ; is new bigger than old?
@@ -4367,6 +4366,34 @@ $8:	banz    $2, *AR5-               ; decrement DAC gate index pointer
 ; variables will point to those gates and thus their top bits will be
 ; zeroed. Checking the top bit can tell if the gate is setup and in use.
 ;
+; The interface gate gets processed twice. It is first used to find the signal
+; crossing point in that gate which is then used to adjust the position of all
+; other gates for which gate interface tracking enabled. During that processing,
+; the software gain is applied to the signal in the gate, even if no DAC gate
+; covers that area. This is necessary because the signal crossing is searched
+; for before the DAC or software gain is applied -- the signal only has the
+; hardware gain applied. This is necessary since the DAC gates also track the
+; interface crossing, so that must be found before the DAC can be applied.
+;
+; The interface gate is then processed again along with the other gates in the
+; processing loop as a regular gate. The findInterfaceGateCrossing function used
+; to find the crossing point (as mentioned above) forces off the tracking flag
+; for the interface gate so it doesn't try to track itself when the gate is
+; processed again in the loop. When processed in the loop, gain is not applied
+; by default so if the DAC is enabled and the signal from the interface gate is
+; to be used in some manner by the host with the DAC enabled, a DAC gate should
+; be placed over the interface gate area so the signal will be valid. With DAC
+; disabled, the software gain is applied over the entire signal anyway.
+;
+; If the interface gate is active, no gates will be processed if a signal
+; crossing is not found in the interface gate. This is because the gates'
+; positions cannot be determined if the interface is not detected.
+; NOTE: A gate can still be designated non-tracking if the interface gate is
+; active, but that gate will not be processed if the interface is not found
+; even though that gate does not need it for positioning -- NO gates (tracking
+; or non-tracking) are processed if no crossing found in an active interface
+; gate.
+;
 
 processGates:
 
@@ -4386,10 +4413,15 @@ processGates:
 	bitf    interfaceGateIndex, #8000h
 	cc      findInterfaceGateCrossing, NTC
 
+        ;don't process gates if interface not found -- see note in header
+
+	bitf    processingFlags1, #IFACE_FOUND
+	rc      NTC
+
 	bitf    flags1, #DAC_ENABLED    ; process DAC if it is enabled
 	cc      processDAC, TC          ;  applies gain for each DAC gate to sample set
 
-	bitf    flags1, #DAC_ENABLED    ; apply softwareGain to entire sample set
+	bitf    flags1, #DAC_ENABLED                ; apply softwareGain to entire sample set
 	cc      applyGainToEntireSampleSet, NTC     ; if DAC not enabled
 
 	; cannot use block repeat for this AR5 loop because the block
@@ -4418,39 +4450,9 @@ $2:	ldm     AR5, A                  ; use loop count as gate index
 	popm    AR2                     ; restore gate info pointer
 	nop                             ; pipeline protection
 
-	bitf    *AR2, #GATE_WALL_START  ; find crossing if gate is used for wall start
-	bc      $3, NTC
+        call    processWallGates        ; if this is a wall gate, handle accordingly
 
-	pshm    AR2                     ; save gate info pointer
-	call    findGateCrossing
-
-	andm    #~WALL_START_FOUND, processingFlags1 ; clear the found flag
-
-	xc      2, AEQ                  ; if A returned 0 from function call,
-                                        ; set the found flag
-
-	orm     #WALL_START_FOUND, processingFlags1
-
-	popm    AR2                     ; restore gate info pointer
-	nop                             ; pipeline protection
-
-$3:	bitf	*AR2, #GATE_WALL_END    ; find crossing if gate is used for wall end
-	bc      $4, NTC
-
-	pshm    AR2                     ; save gate info pointer
-	call    findGateCrossing
-
-	andm    #~WALL_END_FOUND, processingFlags1 ; clear the found flag
-
-	xc      2, AEQ                  ; if A returned 0 from function call,
-                                        ; set the found flag
-
-	orm     #WALL_END_FOUND, processingFlags1
-
-	popm    AR2                     ; restore gate info pointer
-	nop                             ; pipeline protection
-
-$4:	bitf    *AR2, #GATE_FIND_PEAK   ; find peak if bit set
+	bitf    *AR2, #GATE_FIND_PEAK   ; find peak if bit set
 	bc      $5, NTC
 
 	pshm    AR2                     ; save gate info pointer
@@ -4481,6 +4483,8 @@ $6:	bitf    *AR2, #GATE_QUENCH_ON_OVERLIMIT	; skip all remaining gates if the in
 
 	popm    AR2                     ; restore gate info pointer
 	nop                             ; pipeline protection
+
+        ; cease processing remaining gates if over limit detected
 
 	bc      $8, AEQ                 ; if A=0, continue processing remaining gates
 	popm    AR5                     ; if A!=0, stop processing gates
@@ -4522,6 +4526,80 @@ $9:
 	.newblock                               ; allow re-use of $ variables
 
 ; end of processGates
+;-----------------------------------------------------------------------------
+
+;-----------------------------------------------------------------------------
+; processWallGates
+;
+; If the gate is a Wall start or end gate, it is processed accordingly.
+; If not a Wall gate, does nothing.
+;
+; The GATE_MAX_MIN flag for any gate used for wall measurement will be cleared
+; here. The host generally sets the wall start gate to a MAX gate and the wall
+; end gate to a MIN gate so it's peak catching code can trap the max and min
+; wall values in those gates. However, all gates need to be MAX gates for the
+; DSP code to function properly for wall measurement. Hence, all wall gates
+; are forced to be MAX gates in this function. The DSP's peak trapping code
+; for wall ignores the gates' MIN/MAX flag.
+;
+
+processWallGates:
+
+	bitf    *AR2, #GATE_WALL_START  ; find crossing if gate is used for wall start
+	bc      $3, NTC
+
+	andm    #~GATE_MAX_MIN, *AR2    ; force gate to be a MAX gate
+
+	pshm    AR2                     ; save gate info pointer
+
+	bitf    *AR2, #GATE_FIND_CROSSING   ; use signal crossing if true
+	cc      findGateCrossing, TC
+
+	bitf    *AR2, #GATE_FIND_PEAK   ; use signal peak if true
+	cc      findGatePeak, TC
+
+	andm    #~WALL_START_FOUND, processingFlags1 ; clear the found flag
+
+	xc      2, AEQ                  ; if A returned 0 from function call,
+                                        ; set the found flag -- crossing found
+                                        ; or peak was above gate
+
+	orm     #WALL_START_FOUND, processingFlags1
+
+	popm    AR2                     ; restore gate info pointer
+	nop                             ; pipeline protection
+
+        ret
+
+$3:	bitf	*AR2, #GATE_WALL_END    ; find crossing if gate is used for wall end
+	bc      $4, NTC
+
+        andm    #~GATE_MAX_MIN, *AR2    ; force gate to be a MAX gate
+
+	pshm    AR2                     ; save gate info pointer
+
+	bitf    *AR2, #GATE_FIND_CROSSING   ; use signal crossing if true
+	cc      findGateCrossing, TC
+
+	bitf    *AR2, #GATE_FIND_PEAK   ; use signal peak if true
+	cc      findGatePeak, TC
+
+	andm    #~WALL_END_FOUND, processingFlags1 ; clear the found flag
+
+	xc      2, AEQ                  ; if A returned 0 from function call,
+                                        ; set the found flag -- crossing found
+                                        ; or peak was above gate
+
+	orm     #WALL_END_FOUND, processingFlags1
+
+	popm    AR2                     ; restore gate info pointer
+	nop                             ; pipeline protection
+
+$4:     ret
+
+        .newblock                               ; allow re-use of $ variables
+
+; end of processWallGates
 ;-----------------------------------------------------------------------------
 
 ;-----------------------------------------------------------------------------
@@ -4574,12 +4652,7 @@ $2:
 	adds    *AR5, A                 ; add the gate type flag to the results flags
 	st      #0, *AR5                ; zero the results flags
 
-;debug mks -- dont' zero the results flag -- zero specific flags
-;such as hit/miss exceeded count
-;some flags need to be untouched such as GATE_EXCEEDED used by wall code
-;change this as soon as possible
-
-	stl     A, -8, *AR3+            ; high byte
+	stl     A, -8, *AR3+            ; store flag high byte in serial out buffer
 	stl     A, *AR3+                ; low byte
 
 	mar     *+AR5(8)                ; move to the peak value
