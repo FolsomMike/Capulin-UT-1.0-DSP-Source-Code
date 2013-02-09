@@ -19,7 +19,6 @@
 /*****************************************************************************/
 
 "Capulin UT DSP.obj"				/* this is an input file from asm500.exe */
-"Capulin UT DSP Debug.obj"			/* this is an input file from asm500.exe */
 -o "Capulin UT DSP.out"				/* this is the output file */
 -m "Capulin UT DSP.map"				/* map output file */
 
