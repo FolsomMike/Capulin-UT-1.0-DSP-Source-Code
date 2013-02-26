@@ -26,6 +26,7 @@ Distributions/
 *.log
 *.obj
 *.abs
+results.txt
 Debug/
 CapulinUT1-0/CapulinUT.CS_/
 /Capulin UT DSP/nbproject/private/
