@@ -501,14 +501,16 @@ DSP_ACKNOWLEDGE					.equ	127
 	; bit 2:	0 = max gate, higher values are worst case
 	;			1 = min gate, lower values are worst case
 	;			(see Caution 1 above)
+	; bit 3:	0 = signal did not exceed the gate level per max/min setting
+	;			1 = signal did exceed the gate level per max/min setting
 	;
 	; Notes:
 	;
-	; Bit 0 is to flag if the signal went above the gate.  It is only set if
+	; Bit 0 is to flag if the signal exceeded the gate a certain number of times.  It is only set if
 	; the violation occurred more than hitCount times in a row.  This flag
 	; typically catches flaw indications.
 	;
-	; Bit 1 is to flag if the signal NEVER went above the gate. It is only set
+	; Bit 1 is to flag if the signal has not exceeded the gate a certain number of times. It is only set
 	; if failure to exceed occurred more than missCount times in a row.  This
 	; is typically used to detect loss of interface or loss of backwall.
 	;
@@ -2380,9 +2382,9 @@ $1:	ld      *AR3+%, 8, A            ; get high byte
 
         ;NOTE:  the following is being done for Gate flags and DAC gate flags.
         ;       it only makes sense for Gate flags. Since most DAC flags are
-        ;       currently zeroed (right?), the following should be ignored. If
-        ;       these DAC flags are ever to be used, the function needs to be
-        ;       separated for Gate and DAC Gate flag setting else the follwoing
+        ;       currently zeroed (right?), the following should be ignored for DAC.
+        ;       If these DAC flags are ever to be used, the function needs to be
+        ;       separated for Gate and DAC Gate flag setting else the following
         ;       will cause problems.
 
 	bitf	*AR2, #GATE_FOR_INTERFACE   ; check if this is the interface gate
@@ -2415,7 +2417,7 @@ $2:	bitf    *AR2, #GATE_WALL_START  ; check if this is the wall start gate
 
 	b       $4
 
-$3:     bitf    *AR2, #GATE_WALL_END    ; check if this is the wall end gate
+$3:	bitf    *AR2, #GATE_WALL_END    ; check if this is the wall end gate
 	bc      $4, NTC
 
 	stl     A, wallEndGateIndex     ; store this index to designate wall end gate
@@ -4450,7 +4452,7 @@ $2:	ldm     AR5, A                  ; use loop count as gate index
 	popm    AR2                     ; restore gate info pointer
 	nop                             ; pipeline protection
 
-        call    processWallGates	; if this is a wall gate, handle accordingly
+	call    processWallGates	; if this is a wall gate, handle accordingly
 
 	bitf    *AR2, #GATE_FIND_PEAK   ; find peak if bit set
 	bc      $5, NTC
@@ -4569,7 +4571,7 @@ processWallGates:
 	popm    AR2                     ; restore gate info pointer
 	nop                             ; pipeline protection
 
-        ret
+	ret
 
 $3:	bitf	*AR2, #GATE_WALL_END    ; find crossing if gate is used for wall end
 	bc      $4, NTC
@@ -4595,9 +4597,9 @@ $3:	bitf	*AR2, #GATE_WALL_END    ; find crossing if gate is used for wall end
 	popm    AR2                     ; restore gate info pointer
 	nop                             ; pipeline protection
 
-$4:     ret
+$4:	ret
 
-        .newblock					; allow re-use of $ variables
+	.newblock					; allow re-use of $ variables
 
 ; end of processWallGates
 ;-----------------------------------------------------------------------------
