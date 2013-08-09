@@ -37,10 +37,16 @@
 * All code in this file should be contained within the ".if debug/.endif"
 * section so that it is not compiled when unneeded.
 *
+* The debuggerCode section includes code used for debugging on the actual
+* board. To use this debugger, symbol "debugger" must be defined in Globals.asm.
+*
 ******************************************************************************
 
-	.include "Globals.asm"	; global symbols such as "debug"
+	.mmregs					; definitions for all the C50 registers
 
+	.include	"TMS320VC5441.asm"
+
+	.include "Globals.asm"	; global symbols such as "debug", "debugger"
 
 	.global	pointToGateInfo
 	.global	calculateGateIntegral
@@ -88,179 +94,6 @@
 
 debugCode:
 
-;debug mks - remove this section - testing for slow AScan processing
-
-;	call	setAScanScale
-;	call	processAScanSlowInit
-;$2	call	processAScanSlow
-;	b		$2
-
-; setup the various parameters and gate info
-; this entire section must be blocked out for normal operation
-; as the gates are already set up by the time this code is reached
-; and this will overwrite them
-;
-; block out by setting debug to 0
-
-
-	ld		#Variables1, DP	; point to Variables1 page
-
-; setup the FPGA data transfer size and related variables by
-; faking data received from the host
-
-	stm		#SERIAL_PORT_RCV_BUFFER, AR3
-	nop										; pipeline protection
-	nop
-
-	mar		*AR3+					; skip past the packet size byte
-
-	ld		#0, A					; high byte of unpacked data packet size
-	stl		A, *AR3+
-
-	ld		#40, A					; low byte of unpacked data packet size
-	stl		A, *AR3-
-
-	mar		*AR3-					; point back to packet size
-	
-	call	setADSampleSize		
-
-; store some data in the raw buffer used to transfer data from the FPGA
-; this data is packed -- two data bytes per word
-
-	stm		#FPGA_AD_SAMPLE_BUFFER, AR3
-
-	ld		#20, A			; number of samples to store
-	stlm	A, BRC
-	ld		#0, A			; start sample values at 0
-
-	rptb	$4				; store 20 ascending values
-	stl		A, *AR3+
-	add		#1, A
-$4: nop						; rptb fails if block ends on 2 word instruction
-
-
-	ld		fpgaADSampleBufEnd, A 	; get pointer to end of FPGA sample buffer
-	stlm	A, AR3
-	nop								; pipeline protection
-	nop
-	ld		#81h, A
-	stl		A, *AR3			; set FPGA data ready/packet count flag
-
-; enable gate processing by faking data received from the host
-
-	stm		#SERIAL_PORT_RCV_BUFFER, AR3
-	nop										; pipeline protection
-	nop
-
-	mar		*AR3+					; skip past the packet size byte
-
-	ld		#0, A
-	or		#GATES_ENABLED, A
-	
-	stl		A, -8, *AR3+			; high byte of Flags1 set bit mask
-	and		#0ffh, A				; mask off high byte
-	stl		A, *AR3-				; low byte of Flags1 set bit mask
-
-	mar		*AR3-					; point back to packet size
-	
-	call	setFlags1		
-
-; set up gate 0 for use in testing
-
-	ld		#0h, A			; use gate 0 for testing
-	call	pointToGateInfo	; point AR2 to the gate's parameter list
-
-	mar		*AR2-			; move back to gate ID
-
-	ld		#99h, A			; change to an ID number easily seen
-	stl		A, *AR2+		;   for debug purposes
-
-	ld		#0c081h, A		; gate flags -- active, flag on max, find peak
-	stl		A, *AR2+
-
-	mar		*AR2+			; skip entry MSW of gate start point
-
-	ld		#0000h, A		; LSW of gate start point in time
-	stl		A, *AR2+
-
-	mar		*AR2+			; skip gate adjusted start point entry
-
-	ld		#3h, A			; width of gate divided by 3
-	stl		A, *AR2+
-
-	ld		#5, A			; height of gate
-	stl		A, *AR2+
-
-; Main Code Test
-
-
-	call	getPeakData
-
-; if debug = 1, return to execute main code
-; this is a good, extensive test method as it checks the actual
-; processing code
-
-	.if		debug = 1
-
-	ret
-
-	.endif
-
-
-; WARNING WARNINIG WARNING WARNING WARNINIG WARNING
-
-; following code will not work until a call to setGateAdjustedStart
-; is added to set the true gate position in the memory buffer
-; call it right here!
-
-; put sample data into the new data buffer and the 3 averaging buffers
-
-	ld		#9h, A			; actual width of the gate
-	sub		#1, A			; subtract 1 to account for loop behavior
-	stlm	A, BRC
-
-; set up AR3, AR4, AR5, AR6 to point to the averaging buffers
-
-
-;WARNING
-; point to gate and load adjusted start from there instead of scratch1
-; code which set scratch1 has been removed
-	ld		scratch1, A		; get the gate adjusted start location stored previously
-;WARNING
-
-	stlm	A, AR3
-	add		#2000h, A		; buffer 1
-	stlm	A, AR4
-	add		#2000h, A		; buffer 2
-	stlm	A, AR5
-	add		#2000h, A		; buffer 3
-	stlm	A, AR6
-
-	ld		#1h, A
-
-	; place an ascending value in the buffers
-
-	rptb	$3
-
-	stl		A, *AR3+
-	stl		A, *AR4+
-	stl		A, *AR5+
-	stl		A, *AR6+
-	add		#1, A
-$3: nop						; rptb fails if block ends on 2 word instruction
-							;  (this may be a simulator problem only)
-
-;point AR2 to gate parameters and scratch1 to gate index as expected by
-; calculateGateIntegral (in this case use gate 0)
-
-$2:	ld		#0h, A			; use gate 0 for testing
-	call	pointToGateInfo	; point AR2 to the gate's parameter list
-
-	call	calculateGateIntegral
-
-;	call	averageGate
-
-	b		$2
 
 
 ; this loop reached if no code above is defined or the code does not have a freeze loop
@@ -274,3 +107,95 @@ deadLoop:
 
 
 	.endif			; .if debug
+
+
+	.if 	debugger
+
+;-----------------------------------------------------------------------------
+; debuggerCode
+;
+; This code is used by the debugger. The symbol "debugger" must be defined
+; in Globals.asm for this code to be included.
+;
+
+; This method stores all registers in memory so they can be accessed for
+; display or modification by the host debug controller.
+
+
+	.global debuggerVariables
+
+	.global AG_Register
+	.global AH_Register
+	.global AL_Register
+	.global BG_Register
+	.global BH_Register
+	.global BL_Register
+
+	.global ST0_Register
+	.global ST1_Register
+
+	.global PMST_Register
+
+	.global AR0_Register
+	.global AR1_Register
+	.global AR2_Register
+	.global AR3_Register
+	.global AR4_Register
+	.global AR5_Register
+	.global AR6_Register
+	.global AR7_Register
+
+storeAllRegisters:
+
+	ld		#debuggerVariables, DP		; point to Debugger Variables page
+
+	pshm	AR0							; save so AR0 can be used during store process
+
+	stm     #debuggerVariables, AR0     ; start of Register buffer
+
+	mvkd	AG, *AR0+
+	mvkd	AH, *AR0+
+	mvkd	AL, *AR0+
+	mvkd	BG, *AR0+
+	mvkd	BH, *AR0+
+	mvkd	BL, *AR0+
+
+	mvkd	ST0, *AR0+
+	mvkd	ST1, *AR0+
+
+	mvkd	PMST, *AR0+
+
+	mvkd	AR0, *AR0+				; dummy save as AR0 has been changed during use as a pointer
+	mvkd	AR1, *AR0+
+	mvkd	AR2, *AR0+
+	mvkd	AR3, *AR0+
+	mvkd	AR4, *AR0+
+	mvkd	AR5, *AR0+
+	mvkd	AR6, *AR0+
+	mvkd	AR7, *AR0+
+
+	stm     #debuggerVariables, AR0     ; back to start as this is a known basepoint
+
+	popm	AR1							; retrieve the stored AR0 into AR1 so it can be properly saved
+	pshm	AR1							; save it again for final restore back to AR0
+
+	mar		*+AR0(9)					; point to AR0 storage variable
+										; use mar to move AR0 as *+ARx(x) can't be used with mvkd to save to memory 			
+										; mapped registers
+
+	mvkd	AR1, *AR0+					; store the original AR0 value (currently in AR1)
+
+	mvdk	*AR0, AR1					; restore the original AR1 value
+
+	popm	AR0							; restore the original AR0 value	
+
+
+debuggerHalt:
+
+	b	debuggerHalt
+
+
+; end of debuggerCode
+;-----------------------------------------------------------------------------
+
+	.endif			; .if debugger

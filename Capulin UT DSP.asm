@@ -68,15 +68,14 @@
 *
 ******************************************************************************
 
-	.mmregs
-
-
-	.include "Globals.asm"	; global symbols such as "debug"
+	.mmregs					; definitions for all the C50 registers
 
 	.include	"TMS320VC5441.asm"
 
+	.include "Globals.asm"	; global symbols such as "debug", "debugger"
+
 	; Use .global with a label here to have the label and its address listed
-	;  in the .map file.
+	;  in the .map file, .abs file, or to be used between different .asm files
 
 	.global	Variables1
 	.global	scratch1
@@ -569,12 +568,56 @@ DSP_ACKNOWLEDGE					.equ	127
 
 	.bss	dacBuffer, DAC_PARAMS_SIZE * 10
 
+	;---------------------------------------------------------------------------------
+
+	;---------------------------------------------------------------------------------
+	; Processor Stack
+	;
+
 	.bss	stack, 99			; the stack is set up here
 	.bss	endOfStack,	1       ; code sets SP here on startup
 								; NOTE: you can have plenty of stack!
 								;   The PIC micro-controller has the limited
 								;   stack space, not the C50!
 
+	;---------------------------------------------------------------------------------
+
+	;---------------------------------------------------------------------------------
+	; Debug Variables
+	;
+	; Variables used for debugging, especially with the on-board debugger code.
+	;
+	; Register contents are stored in the block beginning at debuggerVariables in
+	; the following order:
+	;
+	; AG_Register
+	; AH_Register
+	; AL_Register
+	; BG_Register
+	; BH_Register
+	; BL_Register
+	;
+	; ST0_Register
+	; ST1_Register
+	;
+	; PMST_Register
+	;
+	; AR0_Register
+	; AR1_Register
+	; AR2_Register
+	; AR3_Register
+	; AR4_Register
+	; AR5_Register
+	; AR6_Register
+	; AR7_Register
+	;
+
+	.global debuggerVariables		; Make visible to "Capulin UT DSP Debug.asm" file.
+
+	.bss	debuggerVariables, 50
+
+	; end of Debug Variables
+	;---------------------------------------------------------------------------------
 
 ; NOTE: Various buffers are defined at 3000h and up (see above) - be careful about
 ;       assigning variables past that point.
@@ -3123,7 +3166,7 @@ $1:	mvdd    *AR3+, *AR4+
 ; height to flag.  If it is a "min" gate, the signal must go lower than the
 ; gate to flag.
 ;
-; If the peak is higher than the gate level, the gate's hit counter value
+; If the peak exceeds the gate level, the gate's hit counter value
 ; in the results buffer is incremented.  If the hit count value reaches
 ; the hitCount setting, the appropriate bit is set in the gate's results
 ; flags.
@@ -3161,7 +3204,7 @@ findGatePeak:
 									; reload occurs at end of repeat
 									; block - rptb crashes if it points
 									; to a bc instruction or similar.
-									; This is now the max until replaced.
+									; This is now the max or min until replaced.
 									; indirect addressing *ARx+0 increments
 									; ARx by AR0 after the operation
 
@@ -3190,7 +3233,7 @@ findGatePeak:
 	nop                             ; avoid pipeline conflict with xc
 	nop                             ; two words between test instr and xc
 
-	xc      1, C                    ; if sample in B > prev peak in A, then
+	xc      1, C                    ; if sample in B >= prev peak in A
 	mvmm    AR3, AR4                ; store the buffer address of the new
 									; max
 									; NOTE: AR4 will actually be loaded
@@ -3217,33 +3260,32 @@ $3:	ld      *AR3+0, B               ; get next sample
 	max     A                       ; compare with peak in A
 	nop                             ; avoid pipeline conflict with xc
 	nop                             ; two words between test instr and xc
-	xc      1, C                    ; if sample in B > height in A, then
-	mvmm    AR3, AR4                ; store the buffer address of the new max
+	xc      1, C                    ; if sample in B >= old peak in A, then
+	mvmm    AR3, AR4                ; store the buffer address of the new peak
 
-	ld      *AR3+, B                ; get sample
-	max     A                       ; compare with peak in A
-	nop                             ; avoid pipeline conflict with xc
-	nop                             ; two words between test instr and xc
-	xc      1, C                    ; if sample in B > height in A, then
-	mvmm    AR3, AR4                ; store the buffer address of the new max
+	ld      *AR3+, B                ; repeat for next sample
+	max     A
+	nop
+	nop
+	xc      1, C
+	mvmm    AR3, AR4
 
 	mar     *AR3+                   ; skip past the peak already found,
 									; now do two samples after peak
 
-	ld      *AR3+, B                ; get sample
-	max     A                       ; compare with peak in A
-	nop                             ; avoid pipeline conflict with xc
-	nop                             ; two words between test instr and xc
-	xc      1, C                    ; if sample in A > height in B, then
-	mvmm    AR3, AR4                ; store the buffer address of the new max
+	ld      *AR3+, B                ; repeat for next sample
+	max     A
+	nop
+	nop
+	xc      1, C
+	mvmm    AR3, AR4
 
-	ld      *AR3+, B                ; get sample
-	max     A                       ; compare with peak in A
-	nop                             ; avoid pipeline conflict with xc
-	nop                             ; two words between test instr and xc
-
-	xc      1, C                    ; if sample in B > height in A, then
-	mvmm    AR3, AR4                ; store the buffer address of the new
+	ld      *AR3+, B                ; repeat for next sample
+	max     A
+	nop
+	nop
+	xc      1, C
+	mvmm    AR3, AR4
 
 	mar     *AR4-                   ; adjust to point back to peak
 
@@ -3253,8 +3295,9 @@ $2:
 
 ; min gate - look for minimum signal in the gate
 
-	ld      #0x7fff, 16, B          ; preload B with max value to force
+	ld      #0x7fff, 16, B          ; preload B with very large value to force
 									; save of new value on first min test
+									; value loaded is 0x7fff0000
 	rptb    $4
 
 	min     A                       ; compare sample with previous min
@@ -3263,7 +3306,7 @@ $2:
 	nop                             ; avoid pipeline conflict with xc
 	nop                             ; two words between test instr and xc
 
-	xc      1, C                    ; if sample in A < prev peak in B, then
+	xc      1, C                    ; if sample in B <= prev peak in A, then
 	mvmm    AR3, AR4				; store the buffer address of the new
 									; min
 									; NOTE: AR4 will actually be loaded
@@ -3289,32 +3332,32 @@ $4:	ld      *AR3+0, B               ; get next sample
 	min     A                       ; compare with peak in A
 	nop                             ; avoid pipeline conflict with xc
 	nop                             ; two words between test instr and xc
-	xc      1, C                    ; if sample in B > height in A, then
-	mvmm    AR3, AR4                ; store the buffer address of the new
-									; max
-	ld      *AR3+, B                ; get sample
-	min     A                       ; compare with peak in A
-	nop                             ; avoid pipeline conflict with xc
-	nop                             ; two words between test instr and xc
-	xc      1, C                    ; if sample in B > height in A, then
-	mvmm    AR3, AR4                ; store the buffer address of the new
+	xc      1, C                    ; if sample in B <= old peak in A, then
+	mvmm    AR3, AR4                ; store the buffer address of the new peak
+
+	ld      *AR3+, B				; repeat for next sample
+	min     A
+	nop
+	nop
+	xc      1, C
+	mvmm    AR3, AR4
 
 	mar     *AR3+                   ; skip past the peak already found,
 									; now do two samples after peak
 
-	ld      *AR3+, B                ; get sample
-	min     A                       ; compare with peak in A
-	nop                             ; avoid pipeline conflict with xc
-	nop                             ; two words between test instr and xc
-	xc      1, C                    ; if sample in B > height in A, then
-	mvmm    AR3, AR4                ; store the buffer address of the new
-									; max
-	ld      *AR3+, B                ; get sample
-	min     A                       ; compare with peak in A
-	nop                             ; avoid pipeline conflict with xc
-	nop                             ; two words between test instr and xc
-	xc      1, C                    ; if sample in B > height in A, then
-	mvmm    AR3, AR4                ; store the buffer address of the new
+	ld      *AR3+, B				; repeat for next sample
+	min     A
+	nop
+	nop
+	xc      1, C
+	mvmm    AR3, AR4
+
+	ld      *AR3+, B				; repeat for next sample
+	min     A
+	nop
+	nop
+	xc      1, C
+	mvmm    AR3, AR4
 
 	mar     *AR4-                   ; adjust to point back to peak
 
@@ -3327,18 +3370,16 @@ $4:	ld      *AR3+0, B               ; get next sample
 ; threshold reached
 ; then checks to see if new peak is larger than stored peak and
 ; replaces latter with former if so
-; it is done in this order because a peak above the gate still counts
-; as a hit even if it is not larger than the stored peak - thus a peak
-; above the level will count as the first hit and subsequent hits by
-; slightly smaller peaks can still trigger the hit flag
 
 storeGatePeakResult:
 
 	stl     A, scratch2             ; save the peak
-	ld      *AR2, A                 ; load the gate flags
-	stl     A, scratch3             ; store the flags
-	ld      *+AR2(+5), A            ; load the gate level
-	stl     A, scratch4             ; store the gate level
+	ld      *AR2, A                 ; save copy of gate flags for quick access
+	stl     A, scratch3
+	ld      *+AR2(+5), A            ; save copy of gate level for quick access
+	stl     A, scratch4
+	ld      *+AR2(+1), A            ; save copy of hit count threshold for quick access
+	stl     A, hitCount
 
 	; if subsequent differential noise cancellation mode is active,
 	; subtract the peak from the peak of the previous shot (will actually
@@ -3366,7 +3407,7 @@ $8:
 
 ; max gate - check if peak greater than gate level
 
-	max     A                       ; peak >= gate level?
+	max     A                       ; peak in B >= gate level in A?
 	bc      handlePeakCrossing, C   ; yes if C set, jump to inc hitCount
 	b       handleNoPeakCrossing
 
@@ -3374,7 +3415,7 @@ $3:
 
 ; min gate - check if peak less than gate level
 
-	min     A                       ; peak <= gate level?
+	min     A                       ; peak in B <= gate level in A?
 	bc      handlePeakCrossing, C   ; yes if C set, jump to inc hitCount
 	b       handleNoPeakCrossing
 
@@ -3382,9 +3423,6 @@ handlePeakCrossing:
 
 ; since the peak signal exceeded the gate, clear the "not exceeded" count
 ; and increment the "exceeded" count
-
-	ld      *+AR2(+1), A            ; load hit count threshold from gate info
-	stl     A, hitCount             ; and store it
 
 	call    pointToGateResults      ; point to the entry for gate in scratch1
 	pshm    AR2                     ; save the pointer
@@ -3469,7 +3507,7 @@ checkForNewPeak:
 
 ; max gate - check if peak greater than stored peak
 
-	max     A                       ; peak >= gate level?
+	max     A                       ; peak in B >= current peak in A?
 	bc      $6, C                   ; yes if C set, jump to store
 	ld      #0, A                   ; return 0 - gate was processed
 	ret
@@ -3478,7 +3516,7 @@ $5:
 
 ; min gate - check if peak less than stored peak
 
-	min     A                       ; peak <= gate level?
+	min     A                       ; peak in B <= current peak in A?
 	bc      $6, C                   ; yes if C set, jump to store
 	ld      #0, A                   ; return 0 - gate was processed
 	ret
@@ -4452,7 +4490,11 @@ $2:	ldm     AR5, A                  ; use loop count as gate index
 	popm    AR2                     ; restore gate info pointer
 	nop                             ; pipeline protection
 
-	call    processWallGates	; if this is a wall gate, handle accordingly
+	call    processWallGates		; if this is a wall gate, handle accordingly
+
+	;wip mks -- should bail out here if the gate was a wall start or end gate
+	; as it's a waste of time to find the peak or crossing as that's handled
+	; by processWallGates
 
 	bitf    *AR2, #GATE_FIND_PEAK   ; find peak if bit set
 	bc      $5, NTC
