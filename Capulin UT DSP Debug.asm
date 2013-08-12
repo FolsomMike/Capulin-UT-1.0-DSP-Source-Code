@@ -53,7 +53,6 @@
 	.global	BRC
 	.global	Variables1
 	.global	scratch1
-	.global	debugCode
 
 	.global	setADSampleSize
 	.global fpgaADSampleBufEnd
@@ -108,9 +107,13 @@ deadLoop:
 
 	.endif			; .if debug
 
+;-----------------------------------------------------------------------------
+;-----------------------------------------------------------------------------
+;-----------------------------------------------------------------------------
 
 	.if 	debugger
 
+;-----------------------------------------------------------------------------
 ;-----------------------------------------------------------------------------
 ; debuggerCode
 ;
@@ -121,29 +124,33 @@ deadLoop:
 ; This method stores all registers in memory so they can be accessed for
 ; display or modification by the host debug controller.
 
+;-----------------------------------------------------------------------------
+; initDebugger
+;
+; Performs various setup functions for the debugger.
+;
 
-	.global debuggerVariables
+initDebugger:
 
-	.global AG_Register
-	.global AH_Register
-	.global AL_Register
-	.global BG_Register
-	.global BH_Register
-	.global BL_Register
 
-	.global ST0_Register
-	.global ST1_Register
+	; clear buffer used for storing CPU registers
 
-	.global PMST_Register
+	stm     #debuggerVariables, AR1        ; top of buffer
 
-	.global AR0_Register
-	.global AR1_Register
-	.global AR2_Register
-	.global AR3_Register
-	.global AR4_Register
-	.global AR5_Register
-	.global AR6_Register
-	.global AR7_Register
+	rptz    A, #(DEBUGGER_VARIABLES_BUFFER_SIZE - 1)	;clear A
+	stl     A, *AR1+									;and fill buffer
+
+	ret
+
+; end of initDebugger
+;-----------------------------------------------------------------------------
+
+;-----------------------------------------------------------------------------
+; storeAllRegisters
+;
+; Stores all registers in buffer debuggerVariables so they can be retrieved
+; for display by the debugger. 
+;
 
 storeAllRegisters:
 
@@ -194,8 +201,11 @@ debuggerHalt:
 
 	b	debuggerHalt
 
+; end of storeAllRegisters
+;-----------------------------------------------------------------------------
 
 ; end of debuggerCode
+;-----------------------------------------------------------------------------
 ;-----------------------------------------------------------------------------
 
 	.endif			; .if debugger

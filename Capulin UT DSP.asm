@@ -278,8 +278,8 @@ DSP_ACKNOWLEDGE					.equ	127
 	.bss	serialPortInBufPtr,1	; points to next position of in buffer
 	.bss	reSyncCount,1			; tracks number of times reSync required
 
-	.bss	hitCount,1				; gate violations required to flag
-	.bss	missCount,1				; gate misses required to flag
+	.bss	hitCountThreshold,1		; gate violations required to flag
+	.bss	missCountThreshold,1	; gate misses required to flag
 
 	.bss	dma3Source,1			; used to write to program memory via DMA
 
@@ -373,7 +373,7 @@ DSP_ACKNOWLEDGE					.equ	127
 	;---------------------------------------------------------------------------------
 
 	;---------------------------------------------------------------------------------
-	; Gate Buffer Notes
+	; Gate Info Buffer Notes
 	;
 	; The gatesBuffer section is for storing 10 gates.
 	; Each gate is defined by the data words below:
@@ -386,8 +386,8 @@ DSP_ACKNOWLEDGE					.equ	127
 	; word  4: gate adjusted start location
 	; word  5: gate width / 3
 	; word  6: gate level
-	; word  7: gate hit count (number of consecutive violations before flag)
-	; word  8: gate miss count (number of consecutive non-violations before flag)
+	; word  7: gate hit count threshold (number of consecutive violations before flag)
+	; word  8: gate miss count threshold (number of consecutive non-violations before flag)
 	; word  9: Threshold 1
 	; word 10: unused
 	; word 11: unused
@@ -493,8 +493,8 @@ DSP_ACKNOWLEDGE					.equ	127
 	;
 	; Bit assignments for the Gate Result flags:
 	;
-	; bit 0 :	0 = no signal exceeded gate more than hitCount times consecutively
-	;			1 = signal exceeded gate more than hitCount times consecutively
+	; bit 0 :	0 = no signal exceeded gate more than hitCount threshold times consecutively
+	;			1 = signal exceeded gate more than hitCount threshold times consecutively
 	; bit 1 :	0 = signal did not miss gate more than allowed limit
 	;			1 = signal failed to exceed gate more than missCount times consecutively
 	; bit 2:	0 = max gate, higher values are worst case
@@ -583,7 +583,7 @@ DSP_ACKNOWLEDGE					.equ	127
 	;---------------------------------------------------------------------------------
 
 	;---------------------------------------------------------------------------------
-	; Debug Variables
+	; Debugger Variables
 	;
 	; Variables used for debugging, especially with the on-board debugger code.
 	;
@@ -612,11 +612,9 @@ DSP_ACKNOWLEDGE					.equ	127
 	; AR7_Register
 	;
 
-	.global debuggerVariables		; Make visible to "Capulin UT DSP Debug.asm" file.
+	.bss	debuggerVariables, DEBUGGER_VARIABLES_BUFFER_SIZE
 
-	.bss	debuggerVariables, 50
-
-	; end of Debug Variables
+	; end of Debugger Variables
 	;---------------------------------------------------------------------------------
 
 ; NOTE: Various buffers are defined at 3000h and up (see above) - be careful about
@@ -1860,9 +1858,9 @@ setSoftwareGain:
 ;-----------------------------------------------------------------------------
 ; setHitMissCounts
 ;
-; Sets hitCount and missCount.  The value hitCount specifies how many
-; consecutive times the signal must exceed the gate before it is flagged.
-; The value missCount specifies how many consecutive times the signal must
+; Sets Hit Count and Miss Count thresholds.  The value Hit Count specifies how
+; many consecutive times the signal must exceed the gate before it is flagged.
+; The value Miss Count specifies how many consecutive times the signal must
 ; fail to exceed the gate before it is flagged.
 ;
 ; A value of zero or one means one hit or miss will cause a flag. Values
@@ -1897,12 +1895,12 @@ setHitMissCounts:
 	ld      *AR3+%, 8, A            ; get high byte
 	adds    *AR3+%, A               ; add in low byte
 
-	stl     A, *AR2+                ; hitCount
+	stl     A, *AR2+                ; Hit Count threshold
 
 	ld      *AR3+%, 8, A            ; get high byte
 	adds    *AR3+%, A               ; add in low byte
 
-	stl     A, *AR2+                ; missCount
+	stl     A, *AR2+                ; Miss Count threshold
 
 	b       sendACK                 ; send back an ACK packet
 
@@ -2861,8 +2859,8 @@ processAScanSlowInit:
 ;
 ; If the peak is higher than the gate level, the gate's hit counter value
 ; in the results buffer is incremented.  If the hit count value reaches
-; the hitCount setting, the appropriate bit is set in the gate's results
-; flags.
+; the Hit Count threshold setting, the appropriate bit is set in the gate's
+; results flags.
 ;
 ; NOTE: The "adjusted start location" for the gate should be calculated
 ; before calling this function.
@@ -3168,8 +3166,8 @@ $1:	mvdd    *AR3+, *AR4+
 ;
 ; If the peak exceeds the gate level, the gate's hit counter value
 ; in the results buffer is incremented.  If the hit count value reaches
-; the hitCount setting, the appropriate bit is set in the gate's results
-; flags.
+; the Hit Count threshold setting, the appropriate bit is set in the gate's
+; results flags.
 ;
 ; NOTE: The "adjusted start location" for the gate should be calculated
 ; before calling this function.
@@ -3365,11 +3363,7 @@ $4:	ld      *AR3+0, B               ; get next sample
 
 	.newblock
 
-; checks first to see if the peak is above the gate level - if so
-; increments the hit counter and sets the hit flag if the hitCount
-; threshold reached
-; then checks to see if new peak is larger than stored peak and
-; replaces latter with former if so
+	; store the peak in temporary variables and apply differential shot math
 
 storeGatePeakResult:
 
@@ -3379,14 +3373,16 @@ storeGatePeakResult:
 	ld      *+AR2(+5), A            ; save copy of gate level for quick access
 	stl     A, scratch4
 	ld      *+AR2(+1), A            ; save copy of hit count threshold for quick access
-	stl     A, hitCount
+	stl     A, hitCountThreshold
+	ld      *+AR2(+1), A            ; save copy of miss count threshold for quick access
+	stl     A, missCountThreshold
 
 	; if subsequent differential noise cancellation mode is active,
 	; subtract the peak from the peak of the previous shot (will actually
 	; be two shots ago as each DSP core handles every other shot).
 
 	bitf	scratch3, #SUBSEQUENT_SHOT_DIFFERENTIAL     ; gate function flags
-	bc      $8, NTC                 ; check for subsequent differential mode
+	bc      checkForNewPeak, NTC    ; check for subsequent differential mode
 
 	call    pointToGateResults      ; point AR2 to the entry for gate in scratch1
 
@@ -3398,7 +3394,55 @@ storeGatePeakResult:
 	stl     B, scratch2             ; save the modified current peak
 	stl     A, *AR2                 ; save the unmodified current peak for use on next shot
 
-$8:
+	; check for new peak
+	; checks to see if new peak is larger than stored peak and
+	; replaces latter with former if so
+
+checkForNewPeak:
+
+; if the new peak is greater/lesser than the stored peak, replace the
+; latter with the former
+
+	call    pointToGateResults      ; point to the entry for gate in scratch1
+
+	mar     *+AR2(8)                ; move to stored peak value
+	ld      *AR2, A                 ; load the stored peak
+	ld      scratch2, B             ; load the new peak
+
+	bitf    scratch3, #GATE_MAX_MIN ; function flags - check gate type
+	bc      $5, TC                  ; look for max if 0 or min if 1
+
+; max gate - check if peak greater than stored peak
+
+	max     A                       ; peak in B >= current peak in A?
+	bc      $6, C                   ; yes if C set, jump to store
+	b		checkForPeakCrossing
+
+$5:
+
+; min gate - check if peak less than stored peak
+
+	min     A                       ; peak in B <= current peak in A?
+	bc      $6, C                   ; yes if C set, jump to store
+	b		checkForPeakCrossing
+
+$6:
+
+	stl     A, *AR2+                ; store the new peak in results
+	ldm     AR4, A                  ; get the new peak's buffer address
+	stl     A, *AR2+                ; store address in results
+	ld      trackCount, A           ; get the tracking value for new peak
+	stl     A, *AR2+                ; store tracking value in results
+
+	b		checkForPeakCrossing
+
+	; check to see if peak exceeds the gate
+	; checks first to see if the peak is above the gate level - if so
+	; increments the hit counter and sets the hit flag if the hitCount
+	; threshold reached
+
+checkForPeakCrossing:
+
 	ld      scratch2, B             ; load the peak
 	ld      scratch4, A             ; load the gate level
 
@@ -3425,18 +3469,20 @@ handlePeakCrossing:
 ; and increment the "exceeded" count
 
 	call    pointToGateResults      ; point to the entry for gate in scratch1
-	pshm    AR2                     ; save the pointer
 
-	mar     *+AR2(3)                ; move to "not exceeded" count
+	stl     A, *+AR2(4)				; store the peak in "signal before exceeding"
+	ldm     AR4, A					; store peak address (time) in "signal before exceeding buffer 
+	stl     A, *+AR2(1)				; address" where processWall expects it             
 
-	st      #0,*AR2-                ; clear the "not exceeded" count
+	mar     *+AR2(-2)				; move to and clear the "not exceeded" count
+	st      #0,*AR2-
 
 	ld      *AR2, A                 ; increment the "exceeded" count
 	add     #1, A
 	stl     A, *AR2
 
-	sub     hitCount, A             ; see if number of consecutive hits
-	bc      $7, ALT                 ; >= preset limit - skip if not
+	sub     hitCountThreshold, A	; compare count with threshold
+	bc      $7, ALT                 ; skip if not count < threshold
 
 	st      #0,*AR2-                ; clear the "exceeded" count
 
@@ -3453,18 +3499,16 @@ $7:	bitf    scratch3, #GATE_TRIGGER_ASCAN_SAVE  ; function flags - check if trig
 
 	orm     #CREATE_ASCAN, flags1               ; set flag -- create a new AScan dataset
 
-$1:	b       checkForNewPeak
+$1:	ld      #0, A                   ; return 0 - peak exceeds gate
+
+	ret
 
 ; peak signal did not exceed gate, so clear "exceeded count" and
 ; increment the "not exceeded" count
 
 handleNoPeakCrossing:
 
-	ld      *+AR2(+2), A            ; load miss count threshold from gate info
-	stl     A, missCount            ; and store it
-
 	call    pointToGateResults      ; point to the entry for gate in scratch1
-	pshm    AR2                     ; save the pointer
 
 	mar     *+AR2(2)                ; move to "exceeded" count
 
@@ -3477,8 +3521,8 @@ handleNoPeakCrossing:
 	add     #1, A
 	stl     A, *AR2
 
-	sub     missCount, A            ; see if number of consecutive misses
-	bc      $2, ALT                 ; >= preset limit - skip if not
+	sub     missCountThreshold, A	; compare count with threshold
+	bc      $2, ALT					; skip if not count < thhreshold
 
 	st      #0,*AR2-                ; clear the "not exceeded" count
 
@@ -3488,47 +3532,7 @@ handleNoPeakCrossing:
 	orm     #MISS_COUNT_MET, *AR2   ; set bit 1 - signal missed the gate
 									; missCount number of times
 
-$2:	b       checkForNewPeak
-
-
-checkForNewPeak:
-
-; if the new peak is greater/lesser than the stored peak, replace the
-; latter with the former
-
-	popm    AR2                     ; reload the gate results pointer
-	nop                             ; pipeline protection
-	mar     *+AR2(8)                ; move to stored peak value
-	ld      *AR2, A                 ; load the stored peak
-	ld      scratch2, B             ; load the new peak
-
-	bitf    scratch3, #GATE_MAX_MIN ; function flags - check gate type
-	bc      $5, TC                  ; look for max if 0 or min if 1
-
-; max gate - check if peak greater than stored peak
-
-	max     A                       ; peak in B >= current peak in A?
-	bc      $6, C                   ; yes if C set, jump to store
-	ld      #0, A                   ; return 0 - gate was processed
-	ret
-
-$5:
-
-; min gate - check if peak less than stored peak
-
-	min     A                       ; peak in B <= current peak in A?
-	bc      $6, C                   ; yes if C set, jump to store
-	ld      #0, A                   ; return 0 - gate was processed
-	ret
-
-$6:
-
-	stl     A, *AR2+                ; store the new peak in results
-	ldm     AR4, A                  ; get the new peak's buffer address
-	stl     A, *AR2+                ; store address in results
-	ld      trackCount, A           ; get the tracking value for new peak
-	stl     A, *AR2+                ; store tracking value in results
-	ld      #0, A                   ; return 0 - gate was processed
+$2:	ld      #-1, A                   ; return -1 - peak does not exceed gate
 
 	ret
 
@@ -3559,6 +3563,7 @@ $6:
 ; If the gate is a "max" gate, the signal must go higher than the gate's
 ; height.  If it is a "min" gate, the signal must go lower.
 ;
+; On exit:
 ; If a crossing is detected, A register returns 0 and the results are
 ; stored in the gates results entry in the gateResultsBuffer.
 ; Register A returns -1 if the signal never exceeded the gate.
@@ -3708,7 +3713,7 @@ storeGateCrossingResult:
 	add     #1, A
 	stl     A, *AR2
 
-	sub     hitCount, A             ; see if number of consecutive hits
+	sub     hitCountThreshold, A    ; see if number of consecutive hits
 	bc      $1, ALT                 ; >= preset limit - skip if not
 
 	st      #0,*AR2-                ; clear the "exceeded" count
@@ -3742,7 +3747,7 @@ handleNoCrossing:
 	add     #1, A
 	stl     A, *AR2
 
-	sub     missCount, A            ; see if number of consecutive hits
+	sub     missCountThreshold, A	; see if number of consecutive hits
 	bc      $2, ALT                 ; >= preset limit - skip if not
 
 	st      #0,*AR2-                ; clear the "not exceeded" count
@@ -4182,22 +4187,16 @@ $2:
 
 processWall:
 
-	; AR1 => wall peak buffer
-
-	stm     #wallPeakBuffer, AR1
+	stm     #wallPeakBuffer, AR1	; point AR1 to wall peak buffer
 
 	; calculate the whole number time distance between the before crossing points
 	; in the start and end gates
 
-	; AR3 => start gate results
+	ld      wallStartGateResults, A ; point AR3 to wall start gate results
+	stlm    A, AR3
 
-	ld      wallStartGateResults, A ; load pointer to wall start gate results
-	stlm    A, AR3                  ;  in AR3
-
-	; AR4 => end gate results
-
-	ld      wallEndGateResults, A   ; load pointer to wall end gate results
-	stlm    A, AR4                  ;  in AR4
+	ld      wallEndGateResults, A   ; point AR4 to wall end gate results
+	stlm    A, AR4
 
 	nop                             ; pipeline protection
 
@@ -4225,14 +4224,13 @@ processWall:
 	call    storeNewPeak
 	popm    AR1
 	nop                             ; pipeline protection
-	nop                             ; pipeline protection
 
 $1:
 
 	; check for new min peak
 
 	ld      *+AR1(+11), B           ; load the old min peak
-	mvmm    AR1, AR2                ; point AR2 at the max peak variables debug mks -- should this say min peak variables?
+	mvmm    AR1, AR2                ; point AR2 at the min peak variables
 	ld      *+AR1(-11), A           ; load new value
 
 	min     B                       ; is new bigger than old?
@@ -4398,7 +4396,6 @@ $8:	banz    $2, *AR5-               ; decrement DAC gate index pointer
 ; Processes all gates: finding the interface crossing, adjusting all start
 ; positions, finding signal crossings if enabled, max peaks if enabled.
 ;
-;
 ; On entry, DP should point to Variables1 page.
 ;
 ; The interfaceGateIndex, wallStartGateIndex, wallEndGateIndex variables
@@ -4437,7 +4434,7 @@ $8:	banz    $2, *AR5-               ; decrement DAC gate index pointer
 
 processGates:
 
-	; if bit 15 of the index is zeroed, interface gate has been set so
+	; if bit 15 of interfaceGateIndex is zeroed, interface gate has been set so
 	; process it to find the interface crossing point and adjust the
 	; other gates if they are using interface tracking
 	; (see notes at top of this function for more explanation)
@@ -4453,7 +4450,7 @@ processGates:
 	bitf    interfaceGateIndex, #8000h
 	cc      findInterfaceGateCrossing, NTC
 
-        ;don't process gates if interface not found -- see note in header
+    ;don't process gates if interface not found -- see note in header
 
 	bitf    processingFlags1, #IFACE_FOUND
 	rc      NTC
@@ -4477,7 +4474,6 @@ $2:	ldm     AR5, A                  ; use loop count as gate index
 
 	call    pointToGateInfo         ; point AR2 to the info for gate index in A
 									;  also stores index in A in scratch1
-									;  for later calls to pointToGateResults
 
 	bitf    *AR2, #GATE_ACTIVE      ; function flags - check if gate is active
 	bc      $8, NTC                 ; bit not set, skip this gate
@@ -4490,11 +4486,13 @@ $2:	ldm     AR5, A                  ; use loop count as gate index
 	popm    AR2                     ; restore gate info pointer
 	nop                             ; pipeline protection
 
+	pshm    AR2						; save gate info pointer
 	call    processWallGates		; if this is a wall gate, handle accordingly
+	popm    AR2                     ; restore gate info pointer
+	nop                             ; pipeline protection
 
-	;wip mks -- should bail out here if the gate was a wall start or end gate
-	; as it's a waste of time to find the peak or crossing as that's handled
-	; by processWallGates
+	bc      $8, AEQ					; skip to next gate if current gate was handled
+									; as a wall gate by processWallGates
 
 	bitf    *AR2, #GATE_FIND_PEAK   ; find peak if bit set
 	bc      $5, NTC
@@ -4520,15 +4518,18 @@ $6:	bitf    *AR2, #GATE_QUENCH_ON_OVERLIMIT	; skip all remaining gates if the in
 
 	pshm    AR2                     ; save gate info pointer
 
-
-; wip mks -- check for over limit here
+	; wip mks -- call function to check for over limit here
+	; problem -- the gates are processed from gate 9 to gate 0 because the loop counter is used as the
+	; 	gate index (see above). Thus, trying to quench gates after the interface on overlimit in the
+	;	interface gate won't work! Need to reverse order of gate processing before this section is
+	;	implemented.
 
 	ld      #0, A	;wip mks - remove this after adding quench check
 
 	popm    AR2                     ; restore gate info pointer
 	nop                             ; pipeline protection
 
-        ; cease processing remaining gates if over limit detected
+    ; cease processing remaining gates if over limit detected
 
 	bc      $8, AEQ                 ; if A=0, continue processing remaining gates
 	popm    AR5                     ; if A!=0, stop processing gates
@@ -4539,12 +4540,12 @@ $8:	popm    AR5                     ; restore loop counter
 
 	banz    $2, *AR5-               ; decrement gate index pointer
 
+$9:	; Check if Wall readings need to be processed.
 
 	; if either the wall start or end gates have not been set, then exit
 	; the entries default to ffffh and the top bit will be set unless those
 	; entries have been changed to the index of a wall gate
 
-$9:
 
 	bitf    wallStartGateIndex, #8000h
 	rc      TC
@@ -4580,11 +4581,15 @@ $9:
 ;
 ; The GATE_MAX_MIN flag for any gate used for wall measurement will be cleared
 ; here. The host generally sets the wall start gate to a MAX gate and the wall
-; end gate to a MIN gate so it's peak catching code can trap the max and min
-; wall values in those gates. However, all gates need to be MAX gates for the
-; DSP code to function properly for wall measurement. Hence, all wall gates
-; are forced to be MAX gates in this function. The DSP's peak trapping code
-; for wall ignores the gates' MIN/MAX flag.
+; end gate to a MIN gate so it's peak catching code in the host can trap the
+; max and min wall values in those gates. However, all gates need to be MAX
+; gates for the DSP code to function properly for wall measurement. Hence, all
+; wall gates are forced to be MAX gates in this function. The DSP's peak
+; trapping code for wall ignores the gates' MIN/MAX flag.
+;
+; On exit:
+; If the gate is a Wall start or end gate, the A register returns 0 to signal
+; that the gate was handled in this function. Otherwise, A register returns -1.
 ;
 
 processWallGates:
@@ -4592,15 +4597,19 @@ processWallGates:
 	bitf    *AR2, #GATE_WALL_START  ; find crossing if gate is used for wall start
 	bc      $3, NTC
 
-	andm    #~GATE_MAX_MIN, *AR2    ; force gate to be a MAX gate
-
-	pshm    AR2                     ; save gate info pointer
+	andm    #~GATE_MAX_MIN, *AR2    	; force gate to be a MAX gate
 
 	bitf    *AR2, #GATE_FIND_CROSSING   ; use signal crossing if true
+	pshm	AR2
 	cc      findGateCrossing, TC
+	popm	AR2
+	nop									; pipeline protection
 
-	bitf    *AR2, #GATE_FIND_PEAK   ; use signal peak if true
+	bitf    *AR2, #GATE_FIND_PEAK   	; use signal peak if true
+	pshm	AR2
 	cc      findGatePeak, TC
+	popm	AR2
+	nop									; pipeline protection
 
 	andm    #~WALL_START_FOUND, processingFlags1 ; clear the found flag
 
@@ -4610,8 +4619,7 @@ processWallGates:
 
 	orm     #WALL_START_FOUND, processingFlags1
 
-	popm    AR2                     ; restore gate info pointer
-	nop                             ; pipeline protection
+	ld      #0, A                   ; return 0 - gate was handled as a Wall gate
 
 	ret
 
@@ -4620,13 +4628,17 @@ $3:	bitf	*AR2, #GATE_WALL_END    ; find crossing if gate is used for wall end
 
 	andm    #~GATE_MAX_MIN, *AR2    ; force gate to be a MAX gate
 
-	pshm    AR2                     ; save gate info pointer
-
 	bitf    *AR2, #GATE_FIND_CROSSING   ; use signal crossing if true
+	pshm	AR2
 	cc      findGateCrossing, TC
+	popm	AR2
+	nop									; pipeline protection
 
 	bitf    *AR2, #GATE_FIND_PEAK   ; use signal peak if true
+	pshm	AR2
 	cc      findGatePeak, TC
+	popm	AR2
+	nop									; pipeline protection
 
 	andm    #~WALL_END_FOUND, processingFlags1 ; clear the found flag
 
@@ -4636,10 +4648,15 @@ $3:	bitf	*AR2, #GATE_WALL_END    ; find crossing if gate is used for wall end
 
 	orm     #WALL_END_FOUND, processingFlags1
 
-	popm    AR2                     ; restore gate info pointer
-	nop                             ; pipeline protection
+	ld      #0, A                   ; return 0 - gate was handled as a Wall gate
 
-$4:	ret
+	ret
+
+$4:	
+
+	ld      #-1, A                  ; return -1 as gate was not a Wall gate
+
+	ret
 
 	.newblock					; allow re-use of $ variables
 
@@ -4998,7 +5015,7 @@ setupGatesDACs:
 	rptb    $2
 
 	stm     #GATE_PARAMS_SIZE-2, AR2    ; zeroes per entry -- 1 less to account for loop
-										; behavior, 1 more because ID fills a space
+										; behavior, 1 more less because ID fills a space
 
 
 	stl     A, *AR1+                ; set the ID number
@@ -5134,8 +5151,8 @@ main:
 	st      #512, softwareGain          ; default to gain of 1
 	st      #1234h, trackCount
 	st      #00h, reSyncCount
-	st      #00h, hitCount
-	st      #00h, missCount
+	st      #00h, hitCountThreshold
+	st      #00h, missCountThreshold
 	st      #01h, aScanScale
 	st      #00h, frameCount1
 	st      #00h, frameCount0
@@ -5214,13 +5231,12 @@ mainLoop:
 
 $1:
 
-	; use this call for debugging the wall code
-	;	call	processWall
-
 	.if     debug                   ; see debugCode function for details
-
 	call    debugCode
+	.endif
 
+	.if     debugger                ; perform setup for debugger functions
+	call    initDebugger
 	.endif
 
 	ld      #Variables1, DP         ; point to Variables1 page
