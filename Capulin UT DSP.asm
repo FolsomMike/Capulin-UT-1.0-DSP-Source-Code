@@ -105,14 +105,22 @@ ASCAN_BUFFER				.equ	0x3700	; AScan data set stored here
 FPGA_AD_SAMPLE_BUFFER		.equ	0x4000	; FPGA stores AD samples here
 PROCESSED_SAMPLE_BUFFER		.equ	0x8000	; processed data stored here
 
-; bits for flags1 variable
-TRANSMITTER_ACTIVE			.equ	0x0001	; transmitter active flag
+; bits for flags1 variable -- ONLY set by host
+
+unused1_flags1				.equ	0x0001
 GATES_ENABLED				.equ	0x0002	; gates enabled flag
 DAC_ENABLED					.equ	0x0004	; DAC enabled flag
 ASCAN_FAST_ENABLED			.equ	0x0008	; AScan fast version enabled flag
 ASCAN_SLOW_ENABLED			.equ	0x0010	; AScan slow version enabled flag
 ASCAN_FREE_RUN				.equ	0x0020	; AScan runs free, not triggered by a gate
-CREATE_ASCAN				.equ	0x0040	; signals that a new AScan dataset should be created
+
+;bit masks for processingFlags1 -- ONLY set by DSP
+
+IFACE_FOUND				.equ	0x0001
+WALL_START_FOUND		.equ	0x0002
+WALL_END_FOUND			.equ	0x0004
+TRANSMITTER_ACTIVE		.equ	0x0008	; transmitter active flag
+CREATE_ASCAN			.equ	0x0010	; signals that a new AScan dataset should be created
 
 POSITIVE_HALF				.equ	0x0000
 NEGATIVE_HALF				.equ	0x0001
@@ -140,12 +148,6 @@ HIT_COUNT_MET			.equ	0x0001
 MISS_COUNT_MET			.equ	0x0002
 GATE_MAX_MIN			.equ	0x0004
 GATE_EXCEEDED			.equ	0x0008
-
-;bit masks for processingFlags1
-
-IFACE_FOUND				.equ	0x0001
-WALL_START_FOUND		.equ	0x0002
-WALL_END_FOUND			.equ	0x0004
 
 ;size of buffer entries
 
@@ -1240,7 +1242,7 @@ $1:	ldu     *AR3+%, A               ; reload core ID from packet
 	stm     #01h, SPSD1             ; store value in the desired register
 									; this enables the transmitter
 
-	orm     #TRANSMITTER_ACTIVE, flags1	; set transmitter active flag
+	orm     #TRANSMITTER_ACTIVE, processingFlags1	; set transmitter active flag
 
 	mar	*+AR3(-12)%					; point back to packet ID
 
@@ -1520,7 +1522,7 @@ getAScanBlock:
 	bitf    flags1, #ASCAN_FREE_RUN	; only trigger another AScan dataset creation if in free run mode
 	bc      $2, NTC
 
-	orm     #CREATE_ASCAN, flags1
+	orm     #CREATE_ASCAN, processingFlags1
 
 $2:
 	mar     *AR3+%                  ; skip past the packet size byte
@@ -1703,7 +1705,7 @@ sendACK:
 ;-----------------------------------------------------------------------------
 ; getStatus
 ;
-; Returns the flags1 word via the serial port.
+; Returns the processingFlags1 word via the serial port.
 ;
 ; On entry, AR3 should be pointing to word 2 (received packet data size) of
 ; the received packet.
@@ -1715,7 +1717,7 @@ getStatus:
 
 	stm     #SERIAL_PORT_XMT_BUFFER+6, AR3  ; point to first data word after header
 
-	ld      flags1, A
+	ld      processingFlags1, A
 
 	stl     A, -8, *AR3+                    ; high byte
 	stl     A, *AR3+                        ; low byte
@@ -1745,6 +1747,11 @@ getStatus:
 ;
 ; On entry, AR3 should be pointing to word 2 (received packet data size) of
 ; the received packet.
+;
+; WIP MKS -- the flags set by DSP have now been moved to a different variable.
+; This function can be changed to simply set the flags instead of using an
+; OR mask as a copy of the entire flag set is kept in the host. When that is
+; done, clearFlags1 function can be deleted.
 ;
 
 setFlags1:
@@ -2495,9 +2502,9 @@ $4:	b       sendACK                 ; send back an ACK packet
 ; input buffer which is sent to the host upon request.  It is meant for
 ; display in an oscilloscope type display.
 ;
-; A dataset is only created if the CREATE_ASCAN bit in flags1 is set.  This
-; is set by the getAScanBlock function when the host requests the first AScan
-; block and by findGatePeak when the signal exceeds a trigger gate.
+; A dataset is only created if the CREATE_ASCAN bit in processingflags1 is set.
+; This is set by the getAScanBlock function when the host requests the first
+; AScan block and by findGatePeak when the signal exceeds a trigger gate.
 ;
 ; wip mks -- Since the CREATE_ASCAN bit is set by the call for the first
 ; block of the AScan, the AScan will generally be overwritten with a new
@@ -2541,10 +2548,10 @@ $4:	b       sendACK                 ; send back an ACK packet
 
 processAScan:
 
-	bitf    flags1, #CREATE_ASCAN   ; do nothing if flag not set
+	bitf    processingFlags1, #CREATE_ASCAN   ; do nothing if flag not set
 	rc      NTC
 
-	andm    #~CREATE_ASCAN, flags1  ; clear the flag
+	andm    #~CREATE_ASCAN, processingFlags1  ; clear the flag
 
 	bitf    flags1, #ASCAN_FAST_ENABLED ; process AScan fast if enabled
 	cc      processAScanFast, TC        ; (this will cause framesets to be skipped
@@ -3173,8 +3180,8 @@ $1:	mvdd    *AR3+, *AR4+
 ; before calling this function.
 ;
 ; If the gate is flagged as an AScan trigger gate, the CREATE_ASCAN flag
-; will be set in flags1 so that an AScan data set will be created from
-; the current data set so the signal can be displayed by the host.
+; will be set in processingFlags1 so that an AScan data set will be created
+; from the current data set so the signal can be displayed by the host.
 ;
 ; On entry, DP should point to Variables1 page.
 ;
@@ -3497,7 +3504,7 @@ handlePeakCrossing:
 $7:	bitf    scratch3, #GATE_TRIGGER_ASCAN_SAVE  ; function flags - check if trigger gate
 	bc      $1, NTC                             ; don't trigger an AScan if not a trigger gate
 
-	orm     #CREATE_ASCAN, flags1               ; set flag -- create a new AScan dataset
+	orm     #CREATE_ASCAN, processingFlags1		; set flag -- create a new AScan dataset
 
 $1:	ld      #0, A                   ; return 0 - peak exceeds gate
 
@@ -5105,8 +5112,8 @@ disableSerialTransmitter:
 
 	ld      #Variables1, DP             ; point to Variables1 page
 
-	bitf    flags1, #TRANSMITTER_ACTIVE ; check if transmitter is active
-	rc      NTC                         ; do nothing if inactive
+	bitf    processingFlags1, #TRANSMITTER_ACTIVE	; check if transmitter is active
+	rc      NTC                         			; do nothing if inactive
 
 	ld      #00, DP                     ; must set DP to use bitf
 	bitf    DMPREC, #04h                ; DMA still enabled, not finished, do nothing
@@ -5126,7 +5133,7 @@ disableSerialTransmitter:
 
 	stm     #00h, SPSD1                 ; SPCR2 bit 0 = 0 -> place xmitter in reset
 
-	andm    #~TRANSMITTER_ACTIVE, flags1    ; clear the transmitter active flag
+	andm    #~TRANSMITTER_ACTIVE, processingFlags1	; clear the transmitter active flag
 
 	ret
 
