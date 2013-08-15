@@ -105,7 +105,7 @@ ASCAN_BUFFER				.equ	0x3700	; AScan data set stored here
 FPGA_AD_SAMPLE_BUFFER		.equ	0x4000	; FPGA stores AD samples here
 PROCESSED_SAMPLE_BUFFER		.equ	0x8000	; processed data stored here
 
-; bits for flag1 variable
+; bits for flags1 variable
 TRANSMITTER_ACTIVE			.equ	0x0001	; transmitter active flag
 GATES_ENABLED				.equ	0x0002	; gates enabled flag
 DAC_ENABLED					.equ	0x0004	; DAC enabled flag
@@ -4082,12 +4082,11 @@ findInterfaceGateCrossing:
 ; sample buffer by subtracting hardwareDelay which represents how many
 ; data samples are skipped before the FPGA begins recording.
 ;
-; If interface tracking is on for the gate, call the this function will
-; adjust the start point so that it is relative to the point where the
-; signal first crosses the interface gate.
+; If interface tracking is on for the gate, this function will adjust
+; the start point so that it is relative to the point where the signal
+; first crosses the interface gate.
 ;
-; The crossing function should always be enabled for the interface gate
-; as well as any gate which is also enabled as a wall measurement gate.
+; The crossing function should always be enabled for the interface gate.
 ;
 ; Interface tracking can be turned on or off for each gate by setting the
 ; appropriate bit in the gate's function flags.
@@ -4422,10 +4421,30 @@ $8:	banz    $2, *AR5-               ; decrement DAC gate index pointer
 ; be placed over the interface gate area so the signal will be valid. With DAC
 ; disabled, the software gain is applied over the entire signal anyway.
 ;
-; If the interface gate is active, no gates will be processed if a signal
+; NOTE 1: If the interface gate is present, no gates will be processed if a signal
 ; crossing is not found in the interface gate. This is because the gates'
-; positions cannot be determined if the interface is not detected.
-; NOTE: A gate can still be designated non-tracking if the interface gate is
+; positions cannot be determined if the interface is not detected. Technically,
+; each gate can be independently set for tracking or non-tracking, but the host
+; software currently makes all gates the same mode.
+;
+; NOTE 2: If the interface gate is present but no interface is detected, the
+; DAC gain will not be applied as it is complex to determine which gates are
+; tracking/non-tracking and the gain cannot be applied to the gates without
+; adjusting their position to the interface. Thus, when the DAC is enabled and
+; an interface gate is present with no detectable interface, no DAC gain will
+; be applied even if tracking is disabled. In such a case, no software gain at
+; all will be applied to the sample set until a signal exceeds the interface
+; gate. This can be confusing to the user as it will appear that the software
+; gain is unresponsive.
+;
+; NOTE 2a: Standard procedure is to turn off the DAC, apply software gain
+; and adjust the interface gate as required to obtain a good interface signal
+; in the interface gate. The DAC and tracking (if desired) should then be
+; enabled and the DAC gates adjusted as required while an interface signal is
+; exceeding the interface gate. The interface gate always uses software gain
+; without DAC gain in any case, so adjusting it with the DAC off has no effect.
+;
+; NOTE 3: A gate can still be designated non-tracking if the interface gate is
 ; active, but that gate will not be processed if the interface is not found
 ; even though that gate does not need it for positioning -- NO gates (tracking
 ; or non-tracking) are processed if no crossing found in an active interface
@@ -4450,16 +4469,21 @@ processGates:
 	bitf    interfaceGateIndex, #8000h
 	cc      findInterfaceGateCrossing, NTC
 
-    ;don't process gates if interface not found -- see note in header
+	; apply gain to entire sample set if DAC not enabled -- see Note 2 in header
+
+	bitf    flags1, #DAC_ENABLED    
+	cc      applyGainToEntireSampleSet, NTC
+
+    ;don't process remaining gates if interface not found -- see Notes 1,3 in header
 
 	bitf    processingFlags1, #IFACE_FOUND
 	rc      NTC
 
+	; apply DAC gain to DAC gates if DAC enabled -- see Note 2 in header
+	; (don't do this if interface gate is present but no interface found)
+
 	bitf    flags1, #DAC_ENABLED    ; process DAC if it is enabled
 	cc      processDAC, TC          ;  applies gain for each DAC gate to sample set
-
-	bitf    flags1, #DAC_ENABLED                ; apply softwareGain to entire sample set
-	cc      applyGainToEntireSampleSet, NTC     ; if DAC not enabled
 
 	; cannot use block repeat for this AR5 loop because the block
 	; repeat is used in some functions called within this loop and there
