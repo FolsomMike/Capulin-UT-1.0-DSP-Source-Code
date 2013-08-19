@@ -1,3 +1,12 @@
+
+;debug mks -- test circular buffer
+;	ld		#0aa55h, A
+;	call	storeWordInMapBuffer
+;	ld		#055aah, A
+;	call	storeWordInMapBuffer
+;debug mks
+
+
 ; setup the various parameters and gate info
 ; this entire section must be blocked out for normal operation
 ; as the gates are already set up by the time this code is reached

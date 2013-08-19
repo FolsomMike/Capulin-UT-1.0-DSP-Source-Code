@@ -66,6 +66,31 @@
 * '5441, but it has most of the features.  It only simulates one core of the
 * four contained in the '5441.
 *
+*
+* DMA Addressing
+* 
+* Each core can access its own data memory via DMA and two of the shared
+* program pages. But each of the pairs A/B and C/D can only look at different
+* shared pages.
+* 
+* Core A can access MPAB0/MPAB1		(Debugger set to Shared Page 0/1)
+* Core B can access MPAB2/MPAB3		(Debugger set to Shared Page 2/3)
+* Core A can access MPAB0/MPAB1		(Debugger set to Shared Page 0/1)
+* Core B can access MPAB2/MPAB3		(Debugger set to Shared Page 2/3)
+*
+* This also affects the HPIA bus which is used to view memory and load code
+* by the host. Code for A/B in MPAB0 must be written to Core A Shared Page 0,
+* while for C/D Core C Shared Page 0 is used.
+*
+* Thus only core A can use the DMA to modify code for Cores A/B on the fly
+* as the code is stored in MPAB0.
+*
+* Likewise, only core C can use the DMA to modify code for Cores C/D on the fly
+* as the code is stored in MPCD0.
+*
+* See: TMS320VC5441 Fixed-Point Digital Signal Processor Data Manual
+*	Figure 3?8. Subsystem A Local DMA Memory Map
+*
 ******************************************************************************
 
 	.mmregs					; definitions for all the C50 registers
@@ -93,17 +118,53 @@
 
 ; IMPORTANT NOTE: SERIAL_PORT_RCV_BUFFER is a circular buffer and must be
 ;  placed at an allowed boundary based on the size of the buffer - see manual
-; "TMS320C54x DSP Reference Set Volume 5: Enhanced Peripherals" for details.
+; "TMS320C54x DSP Reference Set Volume 5: Enhanced Peripherals" Table 3-11
+; for details:
+;
+; Also see "TMS320C54x DSP Reference Set Volume 1: CPU and Peripherals" section
+; 5.5.3.4 Circular Address Modifications.
+;
+; Note: a circular buffer does not use a register to hold the base address.
+;  The size of the buffer is placed in the BK register. An ARx register is
+;  then pointed anywhere in the buffer. The address rolls back around by
+;  zeroing some of the least significant bits of ARx based on the value in
+;  the BK register -- the address rolls back around to the base adddress
+;  by zeroing some of the least significant bits of ARx. This works because
+;  the base address is positioned such that its least significant bits are
+;  zeroed -- enough in which to fit the size value in the BK register.
 ;
 
+; allowable circular buffer addressing:
+; for buffer size 0100h-01FFh (256-511) -> XXXX XXX0 0000 0000 b (Table 3-11) 
+
 SERIAL_PORT_RCV_BUFFER		.equ	0x3000	; circular buffer for serial port in
-SERIAL_PORT_RCV_BUFSIZE		.equ	0x100	; size of in buffer
+SERIAL_PORT_RCV_BUFSIZE		.equ	0x100	; size of buffer
 SERIAL_PORT_XMT_BUFFER		.equ	0x3500	; buffer for serial port out
 
 
 ASCAN_BUFFER				.equ	0x3700	; AScan data set stored here
 FPGA_AD_SAMPLE_BUFFER		.equ	0x4000	; FPGA stores AD samples here
 PROCESSED_SAMPLE_BUFFER		.equ	0x8000	; processed data stored here
+
+; IMPORTANT NOTE: MAP_BUFFER is a circular buffer and must be placed at an
+; allowed boundary based on the size of the buffer - see notes for
+; SERIAL_PORT_RCV_BUFFER for details
+;
+; allowable circular buffer addressing:
+; for buffer size 0400h?07FFh (1024?2047) XXXX X000 0000 0000 b (Table 3-11)
+;
+; The DSP stores samples in the MAP_BUFFER for later transfer to the host.
+; The MAP_BUFFER is meant to reside in data page MD*1.
+; (* = A/B/C/D depending on core)
+; MD*0 is switched into 8000h-ffffh when DMMR = 0
+; MD*1 is switched into 8000h-ffffh when DMMR = 1
+; MD*0 and MD*1 can be viewed in the Chart software's debugger window:
+; MD*0 is accessed via Local Page 0; MD*1 vai Local Page 1
+; In the debugger, Local Page 0 and 2 are mirrored, 2 and 3 are mirrored
+; due to the nature of the HIPA bus addressing.
+
+MAP_BUFFER					.equ	0x8000	; circular buffer for map data
+MAP_BUFFER_SIZE				.equ	0x07D0	; size of buffer (2000d)
 
 ; bits for flags1 variable -- ONLY set by host
 
@@ -113,14 +174,16 @@ DAC_ENABLED					.equ	0x0004	; DAC enabled flag
 ASCAN_FAST_ENABLED			.equ	0x0008	; AScan fast version enabled flag
 ASCAN_SLOW_ENABLED			.equ	0x0010	; AScan slow version enabled flag
 ASCAN_FREE_RUN				.equ	0x0020	; AScan runs free, not triggered by a gate
+DSP_FLAW_WALL_MODE			.equ	0x0040	; DSP is a basic flaw/wall peak processor
+DSP_WALL_MAP_MODE			.equ	0x0080	; DSP is a wall mapping processor
 
 ;bit masks for processingFlags1 -- ONLY set by DSP
 
-IFACE_FOUND				.equ	0x0001
-WALL_START_FOUND		.equ	0x0002
-WALL_END_FOUND			.equ	0x0004
-TRANSMITTER_ACTIVE		.equ	0x0008	; transmitter active flag
-CREATE_ASCAN			.equ	0x0010	; signals that a new AScan dataset should be created
+IFACE_FOUND					.equ	0x0001
+WALL_START_FOUND			.equ	0x0002
+WALL_END_FOUND				.equ	0x0004
+TRANSMITTER_ACTIVE			.equ	0x0008	; transmitter active flag
+CREATE_ASCAN				.equ	0x0010	; signals that a new AScan dataset should be created
 
 POSITIVE_HALF				.equ	0x0000
 NEGATIVE_HALF				.equ	0x0001
@@ -183,6 +246,8 @@ DSP_SET_RECTIFICATION			.equ	14
 DSP_SET_FLAGS1					.equ	15
 DSP_CLEAR_FLAGS1				.equ	16
 DSP_SET_GATE_SIG_PROC_THRESHOLD	.equ	17
+DSP_GET_MAP_BLOCK				.equ	18
+
 DSP_ACKNOWLEDGE					.equ	127
 
 ; end of Message / Command IDs
@@ -268,6 +333,11 @@ DSP_ACKNOWLEDGE					.equ	127
 	.bss	freeTimeCnt0,1			; low word of free time counter
 	.bss	freeTime1,1				; high word of free time value
 	.bss	freeTime0,1				; low word of free time value
+
+	.bss	mapBufferInsertIndex,1	; tracks insertion point of circular map buffer
+	.bss	mapBufferExtractIndex,1	; tracks extraction point of circular map buffer
+	.bss	mapBufferCount,1		; tracks number of words available in the map buffer
+	.bss	previousMapTrack,1		; storage of the track variable for detecting change
 
 ; the next block is used by the function processAScanSlow for variable storage
 
@@ -625,6 +695,22 @@ DSP_ACKNOWLEDGE					.equ	127
 ; end of Variables
 ;-----------------------------------------------------------------------------
 
+;-----------------------------------------------------------------------------
+;  Variables on Page ? - uninitialized
+;
+; Variables on page other than 0. Uses .usect to create a new section that
+; can overlay addresses already used by .bss. These are on a different memory
+; page, so the data locations don't overlap.
+;
+; The .usect directive is used as it is functionally equivalent to .bss but
+; creates a separate address space.
+;
+
+example .usect "varpage2", 2
+
+; end of Variables on Page ?
+;-----------------------------------------------------------------------------
+
 	.data
 
 ;-----------------------------------------------------------------------------
@@ -819,6 +905,14 @@ setupDMA2:
 ; Destination buffer: various program memory address
 ; Sync event: free running
 ; Channel: DMA channel #3
+;
+; IMPORTANT NOTE:
+;
+; Only Core A and Core C can write to the program memory in MPAB0 and MPCD0
+; due to the design of the DMA addressing.
+;
+; See "DMA Addressing" section in the notes at the top of this file for
+; more details.
 ;
 
 setupDMA3:
@@ -1183,7 +1277,7 @@ readSerialPort:
 									; and must skip two words before using AR3
 									; due to pipeline conflicts
 
-	stm     SERIAL_PORT_RCV_BUFSIZE, BK ; set the size of the circular buffer
+	stm     #SERIAL_PORT_RCV_BUFSIZE, BK ; set the size of the circular buffer
 	nop                             ; next word cannot use circular
 									; addressing due to pipeline conflicts
 
@@ -1208,6 +1302,7 @@ readSerialPort:
 ; check if packet addressed to this core
 
 	ldu     *+AR3(0)%, A            ; load core ID from packet
+									; [ *+AR3(0)% is only way to not modify AR3 for circular buffer]
 	sub     coreID, A               ; compare the address with this core's ID
 	bc      $1, AEQ                 ; process the packet if ID's match
 
@@ -1260,9 +1355,6 @@ $1:	ldu     *AR3+%, A               ; reload core ID from packet
 
 	sub     #DSP_SET_FLAGS1, 0, A, B    ; same comment as above for
 	bc      setFlags1, BEQ              ; this entire section
-
-	sub     #DSP_CLEAR_FLAGS1, 0, A, B
-	bc      clearFlags1, BEQ
 
 	sub     #DSP_SET_GATE_SIG_PROC_THRESHOLD, 0, A, B
 	bc      setGateSignalProcessingThreshold, BEQ
@@ -1738,20 +1830,10 @@ getStatus:
 ;-----------------------------------------------------------------------------
 ; setFlags1
 ;
-; Allows the host to set one or more bits in the flags1 variable.
-;
-; Logical OR's the incoming word with the flags1 variable and stores it
-; back in the flags1 variable.  Thus any combination of bits can be set by
-; the host by setting the corresponding bit to 1 in the incoming word while
-; bits set to 0 will not be changed.
+; Allows the host to set the flags1 variable.
 ;
 ; On entry, AR3 should be pointing to word 2 (received packet data size) of
 ; the received packet.
-;
-; WIP MKS -- the flags set by DSP have now been moved to a different variable.
-; This function can be changed to simply set the flags instead of using an
-; OR mask as a copy of the entire flag set is kept in the host. When that is
-; done, clearFlags1 function can be deleted.
 ;
 
 setFlags1:
@@ -1763,8 +1845,6 @@ setFlags1:
 
 	ld      #Variables1, DP
 
-	or      flags1, A               ; OR flag set value from host with old flags1
-
 	stl     A, flags1               ; store the new flags
 
 	b       sendACK                 ; send back an ACK packet
@@ -1772,40 +1852,6 @@ setFlags1:
 	.newblock                       ; allow re-use of $ variables
 
 ; end of setFlags1
-;-----------------------------------------------------------------------------
-
-;-----------------------------------------------------------------------------
-; clearFlags1
-;
-; Allows the host to clear one or more bits in the flags1 variable.
-;
-; Logical AND's the incoming word with the flags1 variable and stores it
-; back in the flags1 variable.  Thus any combination of bits can be cleared by
-; the host by setting the corresponding bit to 0 in the incoming word while
-; bits set to 1 will not be changed.
-;
-; On entry, AR3 should be pointing to word 2 (received packet data size) of
-; the received packet.
-;
-
-clearFlags1:
-
-	mar     *AR3+%                  ; skip past the packet size byte
-
-	ld      *AR3+%, 8, A            ; get high byte
-	adds    *AR3+%, A               ; add in low byte
-
-	ld      #Variables1, DP
-
-	and     flags1, A               ; AND flag set value from host with old flags1
-
-	stl     A, flags1               ; store the new flags
-
-	b       sendACK                 ; send back an ACK packet
-
-	.newblock                       ; allow re-use of $ variables
-
-; end of clearFlags1
 ;-----------------------------------------------------------------------------
 
 ;-----------------------------------------------------------------------------
@@ -1938,6 +1984,20 @@ setHitMissCounts:
 ;
 ; On entry, AR3 should be pointing to word 2 (received packet data size) of
 ; the received packet.
+;
+; NOTE:
+;
+; Only Core A and Core C can write to the program memory in MPAB0 and MPCD0
+; due to the design of the DMA addressing. Since A/B share a channel and
+; C/D share a channel, they always have the same settings so it works fine
+; to only have A/C modify the shared code for each pair.
+;
+; See "DMA Addressing" section in the notes at the top of this file for
+; more details.
+;
+; wip mks -- change so that Cores B/D don't modify the code -- they are
+; actually modifing pages MPAB2 and MPCD2 which aren't used at the moment
+; but might cause problems if they are utilized in the future.
 ;
 
 setRectification:
@@ -3086,6 +3146,60 @@ $4:	stl     A, *AR7+
 ;-----------------------------------------------------------------------------
 
 ;-----------------------------------------------------------------------------
+; storeWordInMapBuffer
+;
+; Stores the value in the A register in the circular map buffer in data
+; page MD*1.
+;
+; Increments the mapBufferCount variable to track the number of words inserted.
+;
+; Helpful note:
+; 	*+AR3(0)% is only way to not modify AR3 for circular buffer
+; 	all other operations increment, decrement, or add a value to AR3
+;
+
+storeWordInMapBuffer:
+
+	ld      #Variables1, DP         ; point to Variables1 page
+
+	pshm	AL						; save the value to be buffered
+
+	ld      mapBufferInsertIndex, A ; get the buffer insert index pointer
+	stlm    A, AR3
+	nop								; can't use stm to BK right after stlm AR3
+									; and must skip two words before using AR3
+									; due to pipeline conflicts
+
+	stm     #MAP_BUFFER_SIZE, BK 	; set the size of the circular buffer
+	nop                             ; next word cannot use circular
+									; addressing due to pipeline conflicts
+
+	ld      #00, DP					; point to Memory Mapped Registers
+	orm     #0001h, DMMR			; switch to MD*1 page to access the map buffer
+	nop								; must skip two words before using page
+
+	popm	AL						; retrieve the value to be buffered
+
+	stl     A, *AR3+%               ; store word in buffer
+
+	andm    #0fffeh, DMMR			; switch back to MD*0 data page
+	ld      #Variables1, DP         ; point to Variables1 page
+
+	ldm     AR3, A                  ; save the buffer inset index pointer
+	stl     A, mapBufferInsertIndex
+
+	ld      mapBufferCount, A       ; increment the counter to track number of
+	add     #1, A                   ; words in the buffer
+	stl     A, mapBufferCount
+
+	ret
+
+	.newblock                       ; allow re-use of $ variables
+
+; end of storeWordInMapBuffer
+;-----------------------------------------------------------------------------
+
+;-----------------------------------------------------------------------------
 ; copyToAveragingBuffer
 ;
 ; This function copies data for the gate from the buffer at 8000h to the
@@ -4172,6 +4286,8 @@ $2:
 ; Calculate the wall thickness and record the value if it is a new max or min
 ; peak.
 ;
+; If DSP_WALL_MAP_MODE bit is set, the value is also stored in the map buffer.
+;
 ; For a sample rate of 66.666 mHz and using a sound speed of 0.233 inches/uS,
 ; the time between each sample represents
 ;
@@ -4204,7 +4320,7 @@ processWall:
 	ld      wallEndGateResults, A   ; point AR4 to wall end gate results
 	stlm    A, AR4
 
-	nop                             ; pipeline protection
+	nop                         ; pipeline protection
 
 	mar     *+AR3(5)            ; point to buffer location (time position) of
 								; crossover point for start gate
@@ -4213,7 +4329,10 @@ processWall:
 	ld      *AR4+, A            ;  after crossing of end gate (unsigned)
 	sub     *AR3+, A            ; subtract start gate crossing from end gate crossing
 
-	stl     A, *AR1             ; save the whole number time distance
+	stl     A, *AR1             ; save the whole number time distance as new value
+
+	bitf    flags1, #DSP_WALL_MAP_MODE	; if in wall map mode, save the value to the map buffer
+	cc      storeWallValueInMapBuffer, TC
 
 	; check for new max peak
 
@@ -4261,6 +4380,41 @@ storeNewPeak:
 	.newblock                       ; allow re-use of $ variables
 
 ; end of processWall
+;-----------------------------------------------------------------------------
+
+;-----------------------------------------------------------------------------
+; storeWallValueInMapBuffer
+;
+; Stores the value in the A register in the circular map buffer in data
+; page MD*1.
+;
+; Increments the mapBufferCount variable to track the number of words inserted.
+;
+; If the tracking byte has changed, the new value is stored with the data
+; point in the buffer as a control code.
+;
+
+storeWallValueInMapBuffer:
+
+	call	storeWordInMapBuffer
+
+	; if the tracking value has changed, save it with the data as a control code	
+
+	ldu		trackCount, A			; get the current tracking value as unsigned int
+	stl		A, previousMapTrack		; save new value for future comparisons
+
+	sub		previousMapTrack, A		; compare with previous value
+	rc		AEQ						; exit if value is the same as the previous
+
+	or		#0x8000, A				; set the top bit to designate as a control code
+
+	call	storeWordInMapBuffer	; store the control code in the map buffer
+
+	ret
+
+	.newblock                       ; allow re-use of $ variables
+
+; end of storeWallValueInMapBuffer
 ;-----------------------------------------------------------------------------
 
 ;-----------------------------------------------------------------------------
@@ -5234,6 +5388,10 @@ main:
 
 	stl     A, coreID					; save the DSP ID core
 
+	st      #MAP_BUFFER, mapBufferInsertIndex	; prepare circular map buffer by
+	st      #MAP_BUFFER, mapBufferExtractIndex  ; setting all indices to the base address
+	st		#0, mapBufferCount					; start with zero words in the buffer
+	st		#0, previousMapTrack				; start with zero for the track value comparison variable
 
 	call    setupSerialPort				; prepare the McBSP1 serial port for use
 

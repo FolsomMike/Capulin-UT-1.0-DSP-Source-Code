@@ -17,6 +17,9 @@
 *		.include	"TMS320VC5441.asm"
 *
 *
+* NOTE: This file did not have all the available registers defined. Some
+* have been added and some still remain to be added. 8/19/13
+*
 ******************************************************************************
 
 ; Miscellaneous Registers
@@ -136,3 +139,4 @@ DMSRCDP4	.equ	46h ;Channel 4 Extended Source Data Page Register
 DMDSTDP4	.equ	47h	;Channel 4 Extended Destination Data Page Register
 DMSRCDP5	.equ	48h ;Channel 5 Extended Source Data Page Register
 DMDSTDP5	.equ	49h	;Channel 5 Extended Destination Data Page Register
+DMMR		.equ	50h ;Data Memory Map Register
