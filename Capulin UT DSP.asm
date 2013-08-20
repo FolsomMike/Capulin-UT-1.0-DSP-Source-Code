@@ -4331,9 +4331,6 @@ processWall:
 
 	stl     A, *AR1             ; save the whole number time distance as new value
 
-	bitf    flags1, #DSP_WALL_MAP_MODE	; if in wall map mode, save the value to the map buffer
-	cc      storeWallValueInMapBuffer, TC
-
 	; check for new max peak
 
 	ld      *+AR1(+5), B        ; load the old max peak
@@ -4395,6 +4392,9 @@ storeNewPeak:
 ;
 
 storeWallValueInMapBuffer:
+
+	ldu     wallPeakBuffer, A       ; load the latest wall value
+									; first element in buffer is raw wall
 
 	call	storeWordInMapBuffer
 
@@ -4740,6 +4740,12 @@ $9:	; Check if Wall readings need to be processed.
 
 	bitf    wallEndGateIndex, #8000h
 	rc      TC
+
+	; if in mapping mode, a wall reading is saved to the buffer for every shot even if one or
+	; more gates were not triggered -- previous reading will be used if new one is not available
+
+	bitf    flags1, #DSP_WALL_MAP_MODE	; if in wall map mode, save the value to the map buffer
+	cc      storeWallValueInMapBuffer, TC
 
 	; check to see if the interface was found, the first wall reflection was
 	; found, and the second wall reflection was found
