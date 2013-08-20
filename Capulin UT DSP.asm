@@ -247,6 +247,7 @@ DSP_SET_FLAGS1					.equ	15
 DSP_CLEAR_FLAGS1				.equ	16
 DSP_SET_GATE_SIG_PROC_THRESHOLD	.equ	17
 DSP_GET_MAP_BLOCK				.equ	18
+DSP_GET_MAP_COUNT_CMD			.equ	19
 
 DSP_ACKNOWLEDGE					.equ	127
 
@@ -1351,7 +1352,7 @@ $1:	ldu     *AR3+%, A               ; reload core ID from packet
 	ld      *AR3+%, A                   ; load the message ID
 
 	sub     #DSP_GET_STATUS_CMD, 0, A, B	; B = A - (command)
-	bc	getStatus, BEQ						; do command if B = 0
+	bc		getStatus, BEQ					; do command if B = 0
 
 	sub     #DSP_SET_FLAGS1, 0, A, B    ; same comment as above for
 	bc      setFlags1, BEQ              ; this entire section
@@ -1397,6 +1398,9 @@ $1:	ldu     *AR3+%, A               ; reload core ID from packet
 
 	sub     #DSP_SET_RECTIFICATION, 0, A, B
 	bc      setRectification, BEQ
+
+	sub     #DSP_GET_MAP_COUNT_CMD, 0, A, B
+	bc      getMapBufferWordsAvailableCount, BEQ
 
 	ret
 
@@ -1825,6 +1829,46 @@ getStatus:
 	.newblock                               ; allow re-use of $ variables
 
 ; end of getStatus
+;-----------------------------------------------------------------------------
+
+;-----------------------------------------------------------------------------
+; getMapBufferWordsAvailableCount
+;
+; Returns the number of words waiting extraction in the map buffer. Note that
+; this will result in twice as many bytes in the FPGA buffer; that must be
+; taken into account when specifying the number of bytes the FPGA is to wait
+; for before signalling the Rabbit.
+;
+; The map buffer is circular; if the host doesn't extract data fast enough
+; the buffer will wrap around and overwrite data before it can be retrieved.
+; The count will continue to increase even if the buffer index wraps around.
+;
+; On entry, AR3 should be pointing to word 2 (received packet data size) of
+; the received packet.
+;
+
+getMapBufferWordsAvailableCount:
+
+	ld      #Variables1, DP
+
+	stm     #SERIAL_PORT_XMT_BUFFER+6, AR3  ; point to first data word after header
+
+	ld      mapBufferCount, A
+
+	stl     A, -8, *AR3+                    ; high byte
+	stl     A, *AR3+                        ; low byte
+
+	ld      #2, A                           ; size of data in buffer
+
+	ld      #DSP_GET_MAP_COUNT_CMD, B       ; load message ID into B before calling
+
+	call    responseDelay                   ; see notes in responseDelay for info
+
+	b       sendPacket                      ; send the data in a packet via serial
+
+	.newblock                               ; allow re-use of $ variables
+
+; end of getMapBufferWordsAvailableCount
 ;-----------------------------------------------------------------------------
 
 ;-----------------------------------------------------------------------------
