@@ -4401,14 +4401,17 @@ storeWallValueInMapBuffer:
 	; if the tracking value has changed, save it with the data as a control code	
 
 	ldu		trackCount, A			; get the current tracking value as unsigned int
-	stl		A, previousMapTrack		; save new value for future comparisons
 
 	sub		previousMapTrack, A		; compare with previous value
 	rc		AEQ						; exit if value is the same as the previous
 
+	ldu		trackCount, A			; reload
 	or		#0x8000, A				; set the top bit to designate as a control code
 
 	call	storeWordInMapBuffer	; store the control code in the map buffer
+
+	ldu		trackCount, A			; save current tracking value for future comparison
+	stl		A, previousMapTrack
 
 	ret
 
