@@ -165,6 +165,7 @@ PROCESSED_SAMPLE_BUFFER		.equ	0x8000	; processed data stored here
 
 MAP_BUFFER					.equ	0x8000	; circular buffer for map data
 MAP_BUFFER_SIZE				.equ	0x07D0	; size of buffer (2000d)
+MAP_BLOCK_WORD_SIZE			.equ	50		; number of words sent to host in map block
 
 ; bits for flags1 variable -- ONLY set by host
 
@@ -246,7 +247,7 @@ DSP_SET_RECTIFICATION			.equ	14
 DSP_SET_FLAGS1					.equ	15
 DSP_CLEAR_FLAGS1				.equ	16
 DSP_SET_GATE_SIG_PROC_THRESHOLD	.equ	17
-DSP_GET_MAP_BLOCK				.equ	18
+DSP_GET_MAP_BLOCK_CMD			.equ	18
 DSP_GET_MAP_COUNT_CMD			.equ	19
 
 DSP_ACKNOWLEDGE					.equ	127
@@ -339,6 +340,7 @@ DSP_ACKNOWLEDGE					.equ	127
 	.bss	mapBufferExtractIndex,1	; tracks extraction point of circular map buffer
 	.bss	mapBufferCount,1		; tracks number of words available in the map buffer
 	.bss	previousMapTrack,1		; storage of the track variable for detecting change
+	.bss	mapPacketCount,1		; counts number of packets sent to host -- rolls over at 255
 
 ; the next block is used by the function processAScanSlow for variable storage
 
@@ -1399,6 +1401,9 @@ $1:	ldu     *AR3+%, A               ; reload core ID from packet
 	sub     #DSP_SET_RECTIFICATION, 0, A, B
 	bc      setRectification, BEQ
 
+	sub     #DSP_GET_MAP_BLOCK_CMD, 0, A, B
+	bc      getMapBlock, BEQ
+
 	sub     #DSP_GET_MAP_COUNT_CMD, 0, A, B
 	bc      getMapBufferWordsAvailableCount, BEQ
 
@@ -1492,7 +1497,7 @@ $2:
 ;	required to avoid collision between the DSP cores sharing the port.
 ;
 ; On entry, data to be sent should be stored in SERIAL_PORT_XMT_BUFFER
-; starting at array position 5.  The length of the data should be stored
+; starting at array position 6.  The length of the data should be stored
 ; in the  A register, the message ID should be in the B register.
 ;
 ; The length of the data is not sent back in the packet as the message ID
@@ -1582,6 +1587,91 @@ sendPacket:
 	.newblock                       ; allow re-use of $ variables
 
 ; end of sendPacket
+;-----------------------------------------------------------------------------
+
+;-----------------------------------------------------------------------------
+; getMapBlock
+;
+; Returns the next 50 words (100 bytes) of the map data buffer.  The words are
+; sent as bytes on the serial port, MSB first. The map buffer is circular --
+; if 50 new data words are not available, the extraction pointer will pass the
+; insertion pointer (and possibly wrap around to the top of the buffer) and
+; old data will be returned. Calling getMapBufferWordsAvailableCount first to
+; determine if there are adequate bytes available will prevent this problem.
+;
+; The number of words should be one less than the amount to be transferred:
+;   i.e. a value of 49 returns 50 words which is 100 bytes.
+;
+; Outgoing packet structure:
+;
+; byte 0 : packet counter
+; bytes 1 - 100 : map data
+;
+
+getMapBlock:
+
+	ld      #Variables1, DP
+
+	stm     #SERIAL_PORT_XMT_BUFFER+6, AR3  ; point to first data word after header
+
+	ld      mapPacketCount, A               ; increment the packet counter
+	add     #1, A
+	stl     A, mapPacketCount
+
+	stl     A, *AR3+                        ; store packet counter in first byte
+
+	stm     #MAP_BLOCK_WORD_SIZE-1, AR1    	; get number of words to transfer
+
+	ld      mapBufferExtractIndex, A ; get the buffer extract index pointer
+	stlm    A, AR2
+	nop								; can't use stm to BK right after stlm AR*
+									; and must skip two words before using AR*
+									; due to pipeline conflicts
+
+	stm     #MAP_BUFFER_SIZE, BK 	; set the size of the circular buffer
+	nop                             ; next word cannot use circular
+									; addressing due to pipeline conflicts
+
+	ld      #00, DP					; point to Memory Mapped Registers
+	orm     #0001h, DMMR			; switch to MD*1 page to access the map buffer
+	nop								; must skip three words before using page
+	nop								; use three nops to be safe
+	nop
+
+$1:	ld		*AR2+%, A               ; load word from buffer
+
+	stl     A, -8, *AR3+            ; store high byte serial transmit buffer
+	stl     A, *AR3+                ; low byte
+
+	banz    $1, *AR1-               ; loop until all samples transferred
+
+	andm    #0fffeh, DMMR			; switch back to MD*0 data page
+	nop								; must skip three words before using page
+	nop								; use three nops to be safe
+	nop
+	ld      #Variables1, DP         ; point to Variables1 page
+
+	ldm     AR2, A                  ; save the buffer inset index pointer
+	stl     A, mapBufferExtractIndex
+
+	ld      mapBufferCount, A       ; decrement the counter to track number of
+	sub     #MAP_BLOCK_WORD_SIZE, A ; words in the buffer
+	stl     A, mapBufferCount
+
+	ld      #MAP_BLOCK_WORD_SIZE, 1, A	; load block word size, shift to multiply by two
+										; to calculate number of bytes
+										; since this function uses MAP_BLOCK_WORD_SIZE-1
+										; in the loop, MAP_BLOCK_WORD_SIZE is the actual
+										; number of bytes transferred
+	add     #1, A						; add one to account for packet count byte
+
+	ld      #DSP_GET_MAP_BLOCK_CMD, B ; load message ID into B before calling
+
+	b       sendPacket              ; send the data in a packet via serial
+
+	.newblock                       ; allow re-use of $ variables
+
+; end of getMapBlock
 ;-----------------------------------------------------------------------------
 
 ;-----------------------------------------------------------------------------
@@ -1676,7 +1766,7 @@ $1:
 	ld      getAScanBlockSize, 1, A ; load block word size, shift to multiply by two
 									; to calculate number of bytes
 	add     #5, A                   ; one more word (two more bytes) actually
-									; transferred so add 2, three more bytes
+									; transferred by the loop so add 2, three more bytes
 									; are added to the packet as well so add 3 more
 
 	ld      #DSP_GET_ASCAN_BLOCK_CMD, B ; load message ID into B before calling
@@ -1751,7 +1841,7 @@ $1:
 	ld      getAScanBlockSize, 1, A         ; load block word size, shift to multiply by two
 											; to calculate number of bytes
 	add		#5, A                           ; one more word (two more bytes) actually
-											; transferred so add 2, three more bytes
+											; transferred by the loop so add 2, three more bytes
 											; are added to the packet as well so add 3 more
 
 	ld      #DSP_GET_ASCAN_NEXT_BLOCK_CMD, B    ; load message ID into B before calling
@@ -3206,6 +3296,12 @@ storeWordInMapBuffer:
 
 	ld      #Variables1, DP         ; point to Variables1 page
 
+;debug mks
+;	ld		#200, A
+;	nop
+;	nop
+;debug mks
+
 	pshm	AL						; save the value to be buffered
 
 	ld      mapBufferInsertIndex, A ; get the buffer insert index pointer
@@ -3220,13 +3316,18 @@ storeWordInMapBuffer:
 
 	ld      #00, DP					; point to Memory Mapped Registers
 	orm     #0001h, DMMR			; switch to MD*1 page to access the map buffer
-	nop								; must skip two words before using page
+	nop								; must skip three words before using page
+	nop								; use three nops to be safe
+	nop
 
 	popm	AL						; retrieve the value to be buffered
 
 	stl     A, *AR3+%               ; store word in buffer
 
 	andm    #0fffeh, DMMR			; switch back to MD*0 data page
+	nop								; must skip three words before using page
+	nop								; use three nops to be safe
+	nop
 	ld      #Variables1, DP         ; point to Variables1 page
 
 	ldm     AR3, A                  ; save the buffer inset index pointer
@@ -4788,6 +4889,9 @@ $9:	; Check if Wall readings need to be processed.
 	; if in mapping mode, a wall reading is saved to the buffer for every shot even if one or
 	; more gates were not triggered -- previous reading will be used if new one is not available
 
+	; debug mks -- this only gets done if the interface gate is triggered because processGates
+	;	bails out immediately if no interface detected
+
 	bitf    flags1, #DSP_WALL_MAP_MODE	; if in wall map mode, save the value to the map buffer
 	cc      storeWallValueInMapBuffer, TC
 
@@ -5373,7 +5477,7 @@ main:
 
 	stm     endOfStack, SP          ; setup the stack pointer
 
-	;debug mks - for simulation, block out the next line after running the
+	;note mks - for simulation, block out the next line after running the
 	;		     code once -- the first time is useful to clear the variables
 	;			 and set the index numbers for readability but then it may be
 	;			 commented out for subsequent program runs if data is loaded from
@@ -5445,6 +5549,7 @@ main:
 	st      #MAP_BUFFER, mapBufferExtractIndex  ; setting all indices to the base address
 	st		#0, mapBufferCount					; start with zero words in the buffer
 	st		#0, previousMapTrack				; start with zero for the track value comparison variable
+	st		#0, mapPacketCount					; start with zero for the map packet count
 
 	call    setupSerialPort				; prepare the McBSP1 serial port for use
 
