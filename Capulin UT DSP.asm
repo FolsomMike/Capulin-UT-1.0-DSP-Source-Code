@@ -169,7 +169,7 @@ MAP_BLOCK_WORD_SIZE			.equ	50		; number of words sent to host in map block
 
 ; bits for flags1 variable -- ONLY set by host
 
-unused1_flags1				.equ	0x0001
+PROCESSING_ENABLED			.equ	0x0001	; sample processing enabled
 GATES_ENABLED				.equ	0x0002	; gates enabled flag
 DAC_ENABLED					.equ	0x0004	; DAC enabled flag
 ASCAN_FAST_ENABLED			.equ	0x0008	; AScan fast version enabled flag
@@ -5598,6 +5598,11 @@ $1:
 	sth     A, freeTimeCnt1         ;   this value is reset for each new data set)
 	stl     A, freeTimeCnt0
 
+; process signal samples if enabled
+
+	bitf    flags1, #PROCESSING_ENABLED 
+	bc      $2, NTC
+
 	; check if FPGA has uploaded a new sample data set - the last value in
 	; the buffer will be set to non-zero if so
 
@@ -5606,10 +5611,9 @@ $1:
 	nop                             ; pipeline protection
 	nop
 	ld      *AR3, A                 ; get the flag set by the FPGA
+	cc		processSamples, ANEQ    ; process the new sample set if flag non-zero
 
-	cc      processSamples, ANEQ    ; process the new sample set if flag non-zero
-
-	call    disableSerialTransmitter    ; call this often
+$2:	call    disableSerialTransmitter    ; call this often
 
 	call    readSerialPort          ; read data from the serial port
 
