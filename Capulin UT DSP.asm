@@ -245,7 +245,7 @@ DSP_SET_HIT_MISS_COUNTS			.equ	12
 DSP_GET_PEAK_DATA				.equ	13
 DSP_SET_RECTIFICATION			.equ	14
 DSP_SET_FLAGS1					.equ	15
-DSP_CLEAR_FLAGS1				.equ	16
+DSP_UNUSED1						.equ	16
 DSP_SET_GATE_SIG_PROC_THRESHOLD	.equ	17
 DSP_GET_MAP_BLOCK_CMD			.equ	18
 DSP_GET_MAP_COUNT_CMD			.equ	19
@@ -1856,7 +1856,7 @@ $1:
 ;-----------------------------------------------------------------------------
 ; sendACK
 ;
-; Sends and acknowledgement packet back to the host.  Part of the packet
+; Sends an acknowledgement packet back to the host.  Part of the packet
 ; is the low byte of the resync error count so the host can easily track
 ; the number of reSync errors that have occurred.
 ;
