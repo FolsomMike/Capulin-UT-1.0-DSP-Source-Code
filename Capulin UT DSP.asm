@@ -69,14 +69,16 @@
 *
 * DMA Addressing
 * 
-* Each core can access its own data memory via DMA and two of the shared
-* program pages. But each of the pairs A/B and C/D can only look at different
-* shared pages.
-* 
-* Core A can access MPAB0/MPAB1		(Debugger set to Shared Page 0/1)
-* Core B can access MPAB2/MPAB3		(Debugger set to Shared Page 2/3)
-* Core A can access MPAB0/MPAB1		(Debugger set to Shared Page 0/1)
-* Core B can access MPAB2/MPAB3		(Debugger set to Shared Page 2/3)
+* Each core can access its own data memory via DMA and two of its shared
+* program pages. A core can run code from any of the pages it shares with
+* its partner (Core A with B and C with D), but each core can only access
+* some of its shared pages via DMA.
+*
+* Via DMA: 
+* Core A can access MPAB0/MPAB1		(Debugger views as Shared Page 0/1)
+* Core B can access MPAB2/MPAB3		(Debugger views as Shared Page 2/3)
+* Core C can access MPCD0/MPCD1		(Debugger views as Shared Page 0/1)
+* Core D can access MPCD2/MPCD3		(Debugger views as Shared Page 2/3)
 *
 * This also affects the HPIA bus which is used to view memory and load code
 * by the host. Code for A/B in MPAB0 must be written to Core A Shared Page 0,
@@ -192,18 +194,18 @@ FULL_WAVE					.equ	0x0002
 RF_WAVE						.equ	0x0003
 
 ;bits for gate and DAC flags
-GATE_ACTIVE					.equ	0x0001
-GATE_REPORT_NOT_EXCEED		.equ	0x0002
-GATE_MAX_MIN				.equ	0x0004
-GATE_WALL_START				.equ	0x0008
-GATE_WALL_END				.equ	0x0010
-GATE_FIND_CROSSING			.equ	0x0020
-GATE_USES_TRACKING			.equ	0x0040
-GATE_FIND_PEAK				.equ	0x0080
-GATE_FOR_INTERFACE			.equ	0x0100
-GATE_INTEGRATE_ABOVE_GATE	.equ	0x0200
-GATE_QUENCH_ON_OVERLIMIT	.equ	0x0400
-GATE_TRIGGER_ASCAN_SAVE		.equ	0x0800
+GATE_ACTIVE						.equ	0x0001
+GATE_REPORT_NOT_EXCEED			.equ	0x0002
+GATE_MAX_MIN					.equ	0x0004
+GATE_WALL_START					.equ	0x0008
+GATE_WALL_END					.equ	0x0010
+GATE_FIND_CROSSING				.equ	0x0020
+GATE_USES_TRACKING				.equ	0x0040
+GATE_FIND_PEAK					.equ	0x0080
+GATE_FOR_INTERFACE				.equ	0x0100
+GATE_INTEGRATE_ABOVE_GATE		.equ	0x0200
+GATE_QUENCH_ON_OVERLIMIT		.equ	0x0400
+GATE_TRIGGER_ASCAN_SAVE			.equ	0x0800
 SUBSEQUENT_SHOT_DIFFERENTIAL	.equ	0x1000
 
 ;bit masks for gate results data flag
