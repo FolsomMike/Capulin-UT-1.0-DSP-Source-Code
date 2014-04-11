@@ -251,6 +251,7 @@ DSP_UNUSED1						.equ	16
 DSP_SET_GATE_SIG_PROC_THRESHOLD	.equ	17
 DSP_GET_MAP_BLOCK_CMD			.equ	18
 DSP_GET_MAP_COUNT_CMD			.equ	19
+DSP_RESET_MAPPING_CMD			.equ	20
 
 DSP_ACKNOWLEDGE					.equ	127
 
@@ -306,14 +307,14 @@ DSP_ACKNOWLEDGE					.equ	127
 	.bss	heartBeat,1				; incremented constantly to show that program
 									; is running
 
-
-	.bss	flags1,1				; bit 0 : serial port transmitter active
+	.bss	flags1,1				; bit 0 : sample processing enabled
 									; bit 1 : Gates Enabled
 									; bit 2 : DAC Enabled
 									; bit 3 : Fast AScan Enabled
 									; bit 4 : Slow AScan Enabled
 									; bit 5 : AScan free run, not triggered by a gate
-									; bit 6 : signals that a new AScan data set should be created
+									; bit 6 : DSP is a basic flaw/wall peak processor
+									; bit 7 : DSP is a wall mapping processor
 
 	.bss	softwareGain,1			; gain multiplier for the signal
 	.bss	adSampleSize,1			; size of the unpacked data set from the FPGA
@@ -1409,6 +1410,9 @@ $1:	ldu     *AR3+%, A               ; reload core ID from packet
 	sub     #DSP_GET_MAP_COUNT_CMD, 0, A, B
 	bc      getMapBufferWordsAvailableCount, BEQ
 
+	sub     #DSP_RESET_MAPPING_CMD, 0, A, B
+	bc      handleResetMappingCommand, BEQ
+
 	ret
 
 	.newblock                       ; allow re-use of $ variables
@@ -1642,7 +1646,7 @@ getMapBlock:
 
 $1:	ld		*AR2+%, A               ; load word from buffer
 
-	stl     A, -8, *AR3+            ; store high byte serial transmit buffer
+	stl     A, -8, *AR3+            ; store high byte in serial transmit buffer
 	stl     A, *AR3+                ; low byte
 
 	banz    $1, *AR1-               ; loop until all samples transferred
@@ -1653,7 +1657,7 @@ $1:	ld		*AR2+%, A               ; load word from buffer
 	nop
 	ld      #Variables1, DP         ; point to Variables1 page
 
-	ldm     AR2, A                  ; save the buffer inset index pointer
+	ldm     AR2, A                  ; save the buffer insert index pointer
 	stl     A, mapBufferExtractIndex
 
 	ld      mapBufferCount, A       ; decrement the counter to track number of
@@ -2264,6 +2268,28 @@ setADSampleSize:
 	.newblock                       ; allow re-use of $ variables
 
 ; end of setADSampleSize
+;-----------------------------------------------------------------------------
+
+;-----------------------------------------------------------------------------
+; handleResetMappingCommand
+;
+; Processes request from host to reset the mapping variables.
+;
+; No data in the command packet is used in this function.
+;
+; On entry, AR3 should be pointing to word 2 (received packet data size) of
+; the received packet.
+;
+
+handleResetMappingCommand:
+
+	call	resetMapping
+
+	b       sendACK                 ; send back an ACK packet
+
+	.newblock                       ; allow re-use of $ variables
+
+; end of handleResetMappingCommand
 ;-----------------------------------------------------------------------------
 
 ;-----------------------------------------------------------------------------
@@ -5454,6 +5480,28 @@ disableSerialTransmitter:
 ;-----------------------------------------------------------------------------
 
 ;-----------------------------------------------------------------------------
+; resetMapping
+;
+; Resets all buffer pointers, counters, etc. related to storing and transmitting
+; map data.
+;
+
+resetMapping:
+
+	ld      #Variables1,DP
+
+	st      #MAP_BUFFER, mapBufferInsertIndex	; prepare circular map buffer by
+	st      #MAP_BUFFER, mapBufferExtractIndex  ; setting all indices to the base address
+	st		#0, mapBufferCount					; start with zero words in the buffer
+	st		#0, previousMapTrack				; start with zero for the track value comparison variable
+	st		#0, mapPacketCount					; start with zero for the map packet count
+
+	ret
+
+; end of resetMapping
+;-----------------------------------------------------------------------------
+
+;-----------------------------------------------------------------------------
 ; main
 ;
 ; This is the main execution startup code.
@@ -5547,11 +5595,7 @@ main:
 
 	stl     A, coreID					; save the DSP ID core
 
-	st      #MAP_BUFFER, mapBufferInsertIndex	; prepare circular map buffer by
-	st      #MAP_BUFFER, mapBufferExtractIndex  ; setting all indices to the base address
-	st		#0, mapBufferCount					; start with zero words in the buffer
-	st		#0, previousMapTrack				; start with zero for the track value comparison variable
-	st		#0, mapPacketCount					; start with zero for the map packet count
+	call	resetMapping				; reset all mapping control variables
 
 	call    setupSerialPort				; prepare the McBSP1 serial port for use
 
