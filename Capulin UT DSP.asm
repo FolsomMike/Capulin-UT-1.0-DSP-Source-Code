@@ -4535,9 +4535,9 @@ $1:
 
 storeNewPeak:
 
-        ; store the new peak
-        ; AR1 should point at the new value
-        ; AR2 should point at the peak variables to be updated
+	; store the new peak
+    ; AR1 should point at the new value
+    ; AR2 should point at the peak variables to be updated
 
 	ld      *AR1, A                 ; whole number
 	stl     A, *AR2
@@ -4571,19 +4571,20 @@ storeWallValueInMapBuffer:
 
 	call	storeWordInMapBuffer
 
-	; if the tracking value has changed, save it with the data as a control code	
+	; if the tracking value has changed from non-zero to zero indicating a Track reset,
+	; save the previous non-zero value inline with the wall data as a control code
 
 	ldu		trackCount, A			; get the current tracking value as unsigned int
+	bc		$1,ANEQ					; bail out if it is not zero; reset has not occurred
 
-	sub		previousMapTrack, A		; compare with previous value
-	rc		AEQ						; exit if value is the same as the previous
+	ldu		previousMapTrack, A		; check if previous value was zero
+	bc		$1,AEQ					; if was zero, still in reset condition
 
-	ldu		trackCount, A			; reload
 	or		#0x8000, A				; set the top bit to designate as a control code
 
 	call	storeWordInMapBuffer	; store the control code in the map buffer
 
-	ldu		trackCount, A			; save current tracking value for future comparison
+$1:	ldu		trackCount, A			; save current tracking value for future comparison
 	stl		A, previousMapTrack
 
 	ret
@@ -4918,7 +4919,8 @@ $9:	; Check if Wall readings need to be processed.
 	; more gates were not triggered -- previous reading will be used if new one is not available
 
 	; debug mks -- this only gets done if the interface gate is triggered because processGates
-	;	bails out immediately if no interface detected
+	;	bails out immediately if no interface detected; to change this, instead of returning, it
+	; 	could jump to a section which duplicates the next two lines and then return
 
 	bitf    flags1, #DSP_WALL_MAP_MODE	; if in wall map mode, save the value to the map buffer
 	cc      storeWallValueInMapBuffer, TC
@@ -5298,6 +5300,7 @@ $2:	add     #2, B                   ; increment the flag by 2 (each DSP gets eve
 	ld      *AR2+, A                ; load the tracking value for this sample set
 									; this can be linear or rotational position tracking
 									; depending on the system
+
 	stl     A, trackCount           ; store it for tagging the peak data
 
 	ld      adSamplePackedSize, A   ; load size of FPGA buffer
