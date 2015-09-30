@@ -93,6 +93,25 @@
 * See: TMS320VC5441 Fixed-Point Digital Signal Processor Data Manual
 *	Figure 3?8. Subsystem A Local DMA Memory Map
 *
+* Multiple DMA Channels Issue
+*
+* According to "TMS320VC5441 Digital Signal Processor Silicon Errata"
+* manual SPRZ190B, a problem can occur when enabling a DMA channel in
+* which another active channel may also be inadvertantly enabled as
+* well.  If the other active channel finishes and clears its DE bit
+* at the exact same time as an ORM instruction is used to enable a
+* different channel, the ORM can overwrite the bit just cleared by
+* the other channel. This can happen because the DMA channels run
+* asynchronously to the code which is executing the ORM.
+*
+* Currently, this code does not have a problem because only two
+* channels are being used: one to handle the serial port and one to
+* write code to program memory by various functions. Since the serial
+* port is in ABU mode it is always active so there is no conflict.
+*
+* If more DMA channels are to be used, precautions will need to be taken
+* as suggested in the Errata manual.
+*
 ******************************************************************************
 
 	.mmregs					; definitions for all the C50 registers
@@ -163,7 +182,7 @@ PROCESSED_SAMPLE_BUFFER		.equ	0x8000	; processed data stored here
 ; MD*0 and MD*1 can be viewed in the Chart software's debugger window:
 ; MD*0 is accessed via Local Page 0; MD*1 vai Local Page 1
 ; In the debugger, Local Page 0 and 2 are mirrored, 2 and 3 are mirrored
-; due to the nature of the HIPA bus addressing.
+; due to the nature of the HPIA bus addressing.
 
 MAP_BUFFER					.equ	0x8000	; circular buffer for map data
 MAP_BUFFER_SIZE				.equ	0x07D0	; size of buffer (2000d)
@@ -223,6 +242,11 @@ GATE_PARAMS_SIZE		.equ	14
 GATE_RESULTS_SIZE		.equ	13
 DAC_PARAMS_SIZE			.equ	9
 
+
+MAX_NUM_COEFFS			.equ	31		; max number of coefficients for which space is reserved
+NUM_COEFFS_IN_PKT		.equ	4		; number of coefficients (unpacked words) in each packet
+MAX_COEFF_BLOCK_NUM		.equ	8		; max number for coefficients packet Descriptor Code
+
 ; end of Miscellaneous Defines
 ;-----------------------------------------------------------------------------
 
@@ -252,6 +276,7 @@ DSP_SET_GATE_SIG_PROC_THRESHOLD	.equ	17
 DSP_GET_MAP_BLOCK_CMD			.equ	18
 DSP_GET_MAP_COUNT_CMD			.equ	19
 DSP_RESET_MAPPING_CMD			.equ	20
+DSP_SET_FILTER_CMD				.equ	21
 
 DSP_ACKNOWLEDGE					.equ	127
 
@@ -303,6 +328,7 @@ DSP_ACKNOWLEDGE					.equ	127
 
 	.bss	Variables1,1			; used to mark the first page of variables
 
+	.bss	breakPointControl,1		; enables or disables specific breakpoints
 
 	.bss	heartBeat,1				; incremented constantly to show that program
 									; is running
@@ -321,6 +347,9 @@ DSP_ACKNOWLEDGE					.equ	127
 	.bss	adSamplePackedSize,1	; size of the data set from the FPGA
 	.bss	fpgaADSampleBufEnd,1	; end of the buffer where FPGA stores A/D samples
 	.bss	coreID,1				; ID number of the DSP core (1-4)
+	.bss	numCoeffs,1				; number of coefficients for FIR filter
+	.bss	firBufferEnd,1			; last position of FIR buffer (based on number of coefficients)
+	.bss	filterScale,1			; scaling for FIR filter output (number of bits to right shift)
 	.bss	getAScanBlockPtr,1		; points to next data to send to host
 	.bss	getAScanBlockSize,1		; number of AScan words to transfer per packet
 	.bss	hardwareDelay1,1		; high word of FPGA hardware delay
@@ -649,6 +678,17 @@ DSP_ACKNOWLEDGE					.equ	127
 	;---------------------------------------------------------------------------------
 
 	;---------------------------------------------------------------------------------
+	; FIR Filter Buffer
+	;
+	; Convolution buffer for the FIR filter. Add 1 to account for the value shifted
+	; out the bottom of the buffer during each convolution.
+	;
+	
+	.bss	firBuffer, MAX_NUM_COEFFS + 1
+
+	;---------------------------------------------------------------------------------
+
+	;---------------------------------------------------------------------------------
 	; Processor Stack
 	;
 
@@ -668,6 +708,7 @@ DSP_ACKNOWLEDGE					.equ	127
 	; Register contents are stored in the block beginning at debuggerVariables in
 	; the following order:
 	;
+	; debugStatusFlags
 	; AG_Register
 	; AH_Register
 	; AL_Register
@@ -722,9 +763,15 @@ example .usect "varpage2", 2
 ;-----------------------------------------------------------------------------
 ; Data - initialized
 
-Data	.word	0000h			; used to mark the first page of data
+Data	.word	55aah			; used to mark the first page of data
 
-test	.word	0001h
+; coeffs1 is the list of coefficients for the signal FIR filter
+; 32 words are reserved to allow 8 packets of 4 words each to be stored
+; these values are replaced by the program with values sent from the host
+; the values are overwritten using a DMA channel, the only way to write to
+; program memory
+
+coeffs1	.word	0,1,2,3,4,5,6,7,8,9,0,1,2,3,4,5,6,7,8,9,0,1,2,3,4,5,6,7,8,9,0,1
 
 ; end of Variables
 ;-----------------------------------------------------------------------------
@@ -735,6 +782,11 @@ test	.word	0001h
 ; setupDMA
 ;
 ; Sets up DMA channels.
+;
+; See manual "TMS320C54x Volume 5 Enhanced Peripherals spru302b" for details.
+;
+; CAUTION: Using multiple DMA channels can cause issues. See note at the
+; top of the file title "Multiple DMA Channels Issue" for details.
 ;
 
 setupDMA:
@@ -787,11 +839,16 @@ setupDMA:
 ; This function prepares DMA Channel 1 to transfer data received on the
 ; McBSP1 serial port to a circular buffer.
 ;
+; See manual "TMS320C54x Volume 5 Enhanced Peripherals spru302b" for details.
+;
 ; Transfer mode: ABU non-decrement
 ; Source Address: McBSP1 receive register (DRR11)
 ; Destination buffer: SERIAL_PORT_RCV_BUFFER (in data space)
 ; Sync event: McBSP1 receive event
 ; Channel: DMA channel #1
+;
+; CAUTION: Using multiple DMA channels can cause issues. See note at the
+; top of the file title "Multiple DMA Channels Issue" for details.
 ;
 
 setupDMA1:
@@ -845,11 +902,16 @@ setupDMA1:
 ; This function prepares DMA Channel 2 to transfer data from a buffer to the
 ; McBSP1 serial port.
 ;
+; See manual "TMS320C54x Volume 5 Enhanced Peripherals spru302b" for details.
+;
 ; Transfer mode: Multiframe mode
 ; Source Address: SERIAL_PORT_XMT_BUFFER (data space)
 ; Destination buffer: McBSP1 transmit register (DXR11)
 ; Sync event: free running
 ; Channel: DMA channel #2
+;
+; CAUTION: Using multiple DMA channels can cause issues. See note at the
+; top of the file title "Multiple DMA Channels Issue" for details.
 ;
 
 setupDMA2:
@@ -906,6 +968,8 @@ setupDMA2:
 ; they cannot be used to write to shared program memory on the '5441.
 ; Only the DMA can write to shared memory.
 ;
+; See manual "TMS320C54x Volume 5 Enhanced Peripherals spru302b" for details.
+;
 ; Transfer mode: Multiframe mode
 ; Source Address: dma3Source variable
 ; Destination buffer: various program memory address
@@ -919,6 +983,9 @@ setupDMA2:
 ;
 ; See "DMA Addressing" section in the notes at the top of this file for
 ; more details.
+;
+; CAUTION: Using multiple DMA channels can cause issues. See note at the
+; top of the file title "Multiple DMA Channels Issue" for details.
 ;
 
 setupDMA3:
@@ -943,7 +1010,7 @@ setupDMA3:
 	;~~~~~~~~00000000 (Frame Count) 1 frame (desired count - 1)
 
 	stm		DMMCR3, DMSA
-	stm		#0000000001000000b, DMSDN
+	stm		#0000000001000100b, DMSDN
 
 	;0~~~~~~~~~~~~~~~ (AUTOINIT) Autoinitialization disabled - *see note below
 	;~0~~~~~~~~~~~~~~ (DINM) DMA Interrupts disabled
@@ -953,7 +1020,7 @@ setupDMA3:
 	;~~~~~000~~~~~~~~ (SIND) No modify on source address
 	;~~~~~~~~01~~~~~~ (DMS) Source in data space
 	;~~~~~~~~~~0~~~~~ Reserved
-	;~~~~~~~~~~~000~~ (DIND) No modify on destination address
+	;~~~~~~~~~~~001~~ (DIND) Post increment destination address
 	;~~~~~~~~~~~~~~00 (DMD) Destination in program space
 
 
@@ -1246,6 +1313,10 @@ $1:	; compare number of bytes in buffer with the specified amount in A
 ;
 ; Since all packets are the same length, data packet size is always the same.
 ;
+; There is no need for processing functions to ensure that they skip past any
+; unused words to the next packet -- this function always makes sure that
+; pointer SerialPortInBufPtr points to the next packet.
+;
 ; The packet to DSP format is:
 ;
 ; byte0 	= 0xaa
@@ -1412,6 +1483,9 @@ $1:	ldu     *AR3+%, A               ; reload core ID from packet
 
 	sub     #DSP_RESET_MAPPING_CMD, 0, A, B
 	bc      handleResetMappingCommand, BEQ
+
+	sub     #DSP_SET_FILTER_CMD, 0, A, B
+	bc      handleSetFilterCommand, BEQ
 
 	ret
 
@@ -2132,23 +2206,32 @@ setHitMissCounts:
 ; C/D share a channel, they always have the same settings so it works fine
 ; to only have A/C modify the shared code for each pair.
 ;
+; If the core is B or D (coreID variable = 2 or 4), this function exits
+; without action to prevent writing to pages MPAB2 or MPCD2.
+;
 ; See "DMA Addressing" section in the notes at the top of this file for
 ; more details.
 ;
-; wip mks -- change so that Cores B/D don't modify the code -- they are
-; actually modifing pages MPAB2 and MPCD2 which aren't used at the moment
-; but might cause problems if they are utilized in the future.
+; CAUTION: Using multiple DMA channels can cause issues. See note at the
+; top of the file title "Multiple DMA Channels Issue" for details.
 ;
 
 setRectification:
 
 	ld      #Variables1, DP
 
+	bitf	coreID, #01h			; check core, only A or C can modify, exit if B or D
+	rc		NTC						; core id = 1/2/3/4, B&D will have bit 0 cleared
+
 	mar     *AR3+%                  ; skip past the packet size byte
 
 	ld      *AR3+%, A               ; get rectification selection
 
 ; choose the appropriate instruction code for the desired rectification
+
+	st      #0f495h, dma3Source     ; opcode for NOP - for RF_WAVE/POS_HALF
+									; this will be default used if rectification
+									; code is invalid
 
 	sub     #POSITIVE_HALF, 0, A, B	; B = A - (command)
 	bc      $3, BNEQ                ; skip if B != 0
@@ -2169,12 +2252,40 @@ $5:	sub     #RF_WAVE, 0, A, B	; B = A - (command)
 	bc      $6, BNEQ                ; skip if B != 0
 	st      #0f495h, dma3Source     ; opcode for NOP - for RF_WAVE (same as POS_HALF)
 
-									; if opcode is unknown, will default to RF_WAVE
 $6:	stm     DMDST3, DMSA            ; set destination address to position of first
 	stm     #rect1, DMSDN           ; instruction which needs to be changed
-									; in the sample processing loop
+	call	runAndWaitOnDMA3		; in the sample processing loop
 
-; start the DMA transfer - see notes below regarding cautions
+	stm     DMDST3, DMSA            ; set destination address to position of second
+	stm     #rect2, DMSDN           ; instruction which needs to be changed
+	call	runAndWaitOnDMA3		; in the sample processing loop
+
+	stm     DMDST3, DMSA            ; set destination address to position of second
+	stm     #rect3, DMSDN           ; instruction which needs to be changed
+	call	runAndWaitOnDMA3		; in the sample processing loop
+
+	stm     DMDST3, DMSA            ; set destination address to position of second
+	stm     #rect4, DMSDN           ; instruction which needs to be changed
+	call	runAndWaitOnDMA3		; in the sample processing loop
+
+	ld      #Variables1, DP
+
+	b       sendACK                 ; send back an ACK packet
+
+	.newblock                       ; allow re-use of $ variables
+
+; end of setRectification
+;-----------------------------------------------------------------------------
+
+;-----------------------------------------------------------------------------
+; runAndWaitOnDMA3
+;
+; Starts DMA channel 3 and waits for it to complete the transfer.
+;
+; On exit, DP will be set to 0x00.
+;
+
+runAndWaitOnDMA3:
 
 	ld      #00, DP
 
@@ -2184,45 +2295,11 @@ $6:	stm     DMDST3, DMSA            ; set destination address to position of fir
 $1:	bitf    DMPREC, #08h            ; loop until DMA disabled
 	bc      $1, TC                  ; AutoInit is disabled, so DMA clears this
 									; enable bit at the end of the block transfer
+	ret
 
-	stm     DMDST3, DMSA            ; set destination address to position of second
-	stm     #rect2, DMSDN           ; instruction which needs to be changed
-									; in the sample processing loop
+	.newblock
 
-; start the DMA transfer - see notes below regarding cautions
-
-	orm     #08h, DMPREC            ; use orm to set only the desired bit
-									; orm to memory mapped reg requires DP = 0
-
-$2:	bitf    DMPREC, #08h            ; loop until DMA disabled
-	bc      $2, TC                  ; AutoInit is disabled, so DMA clears this
-
-	ld      #Variables1, DP
-
-	b       sendACK                 ; send back an ACK packet
-
-; NOTE NOTE NOTE NOTE
-;
-; According to "TMS320VC5441 Digital Signal Processor Silicon Errata"
-; manual SPRZ190B, a problem can occur when enabling a channel which
-; can cause another active channel to also be enabled.  If the other
-; active channel finishes and clears its DE bit at the same time as
-; an ORM instruction is used to enable different channel, the ORM
-; can overwrite the cleared bit the other channel.
-; Currently, this code does not have a problem because the only other
-; active channel is the serial port read DMA which is always active
-; anyway since it is in ABU mode.
-; If another channel is used in the future, see the above listed manual
-; for ways to avoid the issue.
-;
-; It is being used here without precautions - the only other DMA channel
-; active at the same time is the serial port receiver and it is in ABU
-; mode and never gets disabled.
-;
-
-	.newblock                       ; allow re-use of $ variables
-
-; end of setRectification
+; end of runAndWaitOnDMA3
 ;-----------------------------------------------------------------------------
 
 ;-----------------------------------------------------------------------------
@@ -2290,6 +2367,210 @@ handleResetMappingCommand:
 	.newblock                       ; allow re-use of $ variables
 
 ; end of handleResetMappingCommand
+;-----------------------------------------------------------------------------
+
+;-----------------------------------------------------------------------------
+; handleSetFilterCommand
+;
+; Processes request from host to set the signal filter variables.
+;
+; The first byte after the command byte is the Descriptor Code which describes
+; the values contained in the packet:
+;
+;  00: the following byte contains the number of filter coefficients
+;      the byte after that contains the right bit shift amount for scaling
+;  01: the following 8 bytes contain the first set of four coefficient words
+;  02: the following 8 bytes contain the second set of four coefficient words
+;  03: the following 8 bytes contain the third set of four coefficient words
+;  04: the following 8 bytes contain the fourth set of four coefficient words
+;  05: the following 8 bytes contain the fifth set of four coefficient words
+;  06: the following 8 bytes contain the sixth set of four coefficient words
+;  07: the following 8 bytes contain the seventh set of four coefficient words
+;  08: the following 8 bytes contain the eighth set of four coefficient words
+;
+; The number of FIR coefficients is always odd, so one or more of the words
+; in the last set sent will be ignored. The DSP uses the number of coefficients
+; specified using the 00 descriptor. It is not necessary to send 8 sets if
+; there are fewer coefficients.
+;
+; If not zero, the Descriptor Code is used to determine where in the coefficients
+; list the values in the packet should be placed. If the Code is greater than
+; MAX_COEFF_BLOCK_NUM, the values will be ignored and not placed in the list.
+;
+; After each FIR filter convolution performed in the DSP, the result is right
+; shifted by the amount specified in the packet sent with 00 Descriptor Code.
+;
+; The number of coefficients should not be more than MAX_NUM_COEFFS.
+;   If received value is greater, will be limited to the max.
+; The number of bits to shift should not be more than allowed by DSP.
+;	If received value is greater, an unpredictable shift will be applied.
+;
+; If the filter array is empty (a single element set to zero), the array size
+; zero will be sent with a zero bit shift value. In such case, no coefficients
+; will be sent -- the existing ones will be ignored.
+;
+; The coefficients are stored in program memory as the MACD opcode expects them
+; there for fastest operation. A DMA channel is used to store the values as that
+; is the only way to access program memory. There is space reserved for 32 words
+; so 8 packets of four words each can be stored without overrun...in practice
+; no more than 31 values will be used as FIR filters always use an odd number
+; of coefficients.
+;
+; On entry, AR3 should be pointing to word 2 (received packet data size) of
+; the received packet.
+;
+; NOTE:
+;
+; Only Core A and Core C can write to the program memory in MPAB0 and MPCD0
+; due to the design of the DMA addressing. Since A/B share a channel and
+; C/D share a channel, they always have the same settings so it works fine
+; to only have A/C modify the shared code for each pair.
+;
+; If the core is B or D (coreID variable = 2 or 4), this function exits
+; without action to prevent writing to pages MPAB2 or MPCD2.
+;
+; See "DMA Addressing" section in the notes at the top of this file for
+; more details.
+;
+; CAUTION: Using multiple DMA channels can cause issues. See note at the
+; top of the file title "Multiple DMA Channels Issue" for details.
+;
+
+handleSetFilterCommand:
+
+;	b       sendACK                 ; debug mks -- remove this
+
+	ld      #Variables1, DP
+
+	bitf	coreID, #01h			; check core, only A or C can modify, exit if B or D
+	bc		sendACK, NTC			; core id = 1/2/3/4, B&D will have bit 0 cleared
+
+	mar     *AR3+%                  ; skip past the packet size byte
+
+	ld      *AR3+%, A               ; get packet Descriptor Code
+	bc      $2, ANEQ                ; check for code 0, skip if not
+
+	; handle Descriptor Code 0 by storing number of coefficients and
+	; the right shift scale value
+	
+	ld      *AR3+%, A               ; get number of coefficients
+	
+	sub     #MAX_NUM_COEFFS, 0, A, B    ; check if A > MAX (B=A-MAX_NUM_COEFFS)
+	bc      $1, BLEQ            		; A<=0 if A was not over max
+	ld      #MAX_NUM_COEFFS, A			; limit to max
+
+$1:	stl     A, numCoeffs			; store value
+
+	;calculate the ending address of the FIR filter buffer based on the number
+	;of coefficients -- 0 coeffs no problem as filter won't be run in that case
+
+	add     #firBuffer, A
+	sub     #1, A
+	stl		A, firBufferEnd
+
+	ld      *AR3+%, A               ; get filter output scaling value
+	stl     A, filterScale			; store value
+
+	; no need to skip AR3 past end of packet as readSerialPort uses its own pointer
+
+	b       sendACK                 ; send back an ACK packet
+
+$2:
+
+;debug mks
+	stm		#6, AR7
+	call	storeRegistersAndHalt	;debug mks
+;debug mks end
+
+	; handle all other Descriptor Codes by storing the coefficients in the packet
+	; into the list in program memory
+
+	sub     #MAX_COEFF_BLOCK_NUM, 0, A, B    ; check if A > MAX (B=A-MAX_COEFF_BLOCK_NUM)
+	bc      $3, BLEQ            			 ; A<=0 if A was not over max
+
+	; ignore packet due to invalid Descriptor Code
+
+	; no need to skip AR3 past end of packet as readSerialPort uses its own pointer
+
+	b       sendACK                 ; send back an ACK packet
+
+$3:
+
+;debug mks
+	stm		#7, AR7
+	call	storeRegistersAndHalt	;debug mks
+;debug mks end
+
+	; store the values in the packet in the coefficients list
+
+	; calculate offset into list based on Descriptor Code
+	;  (code 1-> first set in list, code 2-> second set, etc.)
+
+	stm     #NUM_COEFFS_IN_PKT, T	; number of coefficients in each packet
+	sub     #1, A					
+	stl     A, scratch1             ; save to multiply by T register
+	mpyu    scratch1, A             ; num coeffs in group x group number
+
+	ld		#coeffs1, B				; destination address is coefficient list
+
+	call	copyByteBufferToProgramMemory
+
+	ld      #Variables1, DP
+
+	b       sendACK                 ; send back an ACK packet
+
+	.newblock                       ; allow re-use of $ variables
+
+; end of handleSetFilterCommand
+;-----------------------------------------------------------------------------
+
+;-----------------------------------------------------------------------------
+; copyByteBufferToProgramMemory
+;
+; This function transfers a series of words to program memory after assembling
+; each word from a byte pair stored in BigEndian format.
+;
+; The source byte buffer is expected to be a circular buffer.
+;
+; On entry:
+;
+; A register = number of words to be transferred.
+; B register = destination address
+; AR3 = address of high order byte of first word 
+; 
+; DMA3 already set up to transfer from variable dma3Source
+; DMA3 already set up to auto post increment the destination address
+;
+
+copyByteBufferToProgramMemory:
+
+	sub     #1, A                   ; subtract 1 to account for loop behavior.
+	stlm    A, BRC					; store transfer count in loop counter
+
+	stm     DMDST3, DMSA            ; set destination address
+	stlm    B, DMSDN				; DMDST3 will be incremented automatically
+
+	rptb    $8
+
+	ld      #Variables1, DP
+
+	ld      *AR3+%, 8, A            ; combine bytes into a word...get high byte
+	adds    *AR3+%, A               ; add in low byte
+	stl     A, dma3Source           ; store in variable used for DMA3 transfers
+
+	ld      #00, DP
+	orm     #08h, DMPREC            ; use orm to set only the desired bit
+									; orm to memory mapped reg requires DP = 0
+
+$1:	bitf    DMPREC, #08h            ; loop until DMA disabled
+	bc      $1, TC                  ; AutoInit is disabled, so DMA clears this
+									; enable bit at the end of the block transfer
+
+$8:	nop								; end of repeat block
+
+	ret	
+
+; end of copyByteBufferToProgramMemory
 ;-----------------------------------------------------------------------------
 
 ;-----------------------------------------------------------------------------
@@ -5245,6 +5526,18 @@ $3:
 ; This counter can be retrieved by the host and compared with the number
 ; of skipped frame errors to determine the error rate.
 ;
+; NOTE: MACD vs FIRS
+;
+; Using the FIRS instruction can cut the convolution time in half, but
+; FIRS requires the use of circular buffers to be efficient as it does
+; not shift the data. As the buffer pointers (ARx registers) only have
+; to be loaded once as the circular setup leaves them pointing at the
+; position for the next data point after convolution means that the setup
+; time is minimal.
+;
+; PROBABLY a good idea to switch this code to using FIRS, complicated
+; though it may be.
+;
 
 processSamples:
 
@@ -5286,10 +5579,6 @@ $2:	add     #2, B                   ; increment the flag by 2 (each DSP gets eve
 	sth     A, frameCount1
 	stl     A, frameCount0
 
-	ld      #-8, ASM                ; for parallel LD||ST, use shift of
-									; -24 for the save (shift=ASM-16)
-									; this shifts the highest byte to the lowest
-
 	; prepare pointers to source and destination buffers
 
 	stm     #FPGA_AD_SAMPLE_BUFFER, AR2     ; point to tracking word at start of buffers
@@ -5308,47 +5597,16 @@ $2:	add     #2, B                   ; increment the flag by 2 (each DSP gets eve
 	stlm    A, BRC                  ; buffer has two samples per word
 
 	; transfer the samples from the FPGA buffer to the processed buffer
-	; split each word into one two byte samples (the FPGA packs two samples
+	; split each word into one two-byte samples (the FPGA packs two samples
 	; into each word)
 
-	ld      *AR2,16,A               ; preload the first sample pair - shift
-									; to AHi to be compatible with code loop
+	; process without filtering if filter as zero coefficients, filter otherwise
 
-; start of transfer block
+	ld		numCoeffs, A
+	cc		processSamplesWithoutFilter, AEQ
 
-	rptb    $1                      ; transfer all samples
-
-rect1:
-	nop                             ; this nop gets replaced with an instruction
-									; which performs the desired rectification
-									;  nop for positive half and RF, neg for
-									; negative half, abs for full
-
-	st      A, *AR3+                ; shift right by 24 (using ASM) and store
-	|| ld   *AR2+, A                ; reload the same pair again to process
-									; lower sample - this function shifts the
-									; packed samples to A(32-16) as it loads
-
-	stl     A, -8, scratch1         ; shift down and store the lower sample
-									; this will chop off the upper sample and
-									; fill the lower bits with zeroes (2)
-
-	ld      scratch1, 16, A         ; reload the value into upper A, extending
-									; the sign
-
-rect2:
-	nop                             ; this nop gets replaced with an instruction
-									; which performs the desired rectification
-									;  nop for positive half and RF, neg for
-									; negative half, abs for full
-
-$1:
-	st      A, *AR3+                ; shift right by 24 (using ASM) and store
-	|| ld   *AR2, A                 ; load the next pair without inc of AR2
-									; this function shifts the packed samples
-									; to A(32-16) as it loads
-
-; end of transfer block
+	ld		numCoeffs, A
+	cc		processSamplesWithFilter, ANEQ
 
 	call    disableSerialTransmitter    ; call this often
 
@@ -5366,6 +5624,148 @@ $1:
 	.newblock                           ; allow re-use of $ variables
 
 ; end of processSamples
+;-----------------------------------------------------------------------------
+
+;-----------------------------------------------------------------------------
+; processSamplesWithoutFilter
+;
+; Extracts each dual-byte stuffed word into two samples and stores each in
+; the processed signal buffer.
+;
+; On entry, DP should point at Variables1 page.
+;
+
+processSamplesWithoutFilter:
+
+;debug mks
+	ld		#5501h,A
+	call	storeRegistersAndHalt	;debug mks
+;debug mks end
+
+	ld      #-8, ASM                ; load constant into ASM register
+									; for parallel LD||ST, this causes shift of
+									; -24 for the save (shift=ASM-16)
+									; this shifts the highest byte to the lowest
+
+	ld      *AR2,16,A               ; preload the first sample pair - shift
+									; to AHi to be compatible with code loop
+
+; start of transfer block
+
+	rptb    $1                      ; transfer all samples
+
+rect3:
+	nop                             ; this nop gets replaced with an instruction
+									; which performs the desired rectification
+									;  nop for positive half and RF, neg for
+									; negative half, abs for full
+
+	st      A, *AR3+                ; shift right by 24 (using ASM) and store
+	|| ld   *AR2+, A                ; reload the same pair again to process
+									; lower sample - this function shifts the
+									; packed samples to A(32-16) as it loads
+
+	stl     A, -8, scratch1         ; shift down and store the lower sample
+									; this will chop off the upper sample and
+									; fill the lower bits with zeroes (2)
+
+	ld      scratch1, 16, A         ; reload the value into upper A, extending
+									; the sign
+
+rect4:
+	nop                             ; this nop gets replaced with an instruction
+									; which performs the desired rectification
+									;  nop for positive half and RF, neg for
+									; negative half, abs for full
+
+$1:
+	st      A, *AR3+                ; shift right by 24 (using ASM) and store
+	|| ld   *AR2, A                 ; load the next pair without inc of AR2
+									; this function shifts the packed samples
+									; to A(32-16) as it loads
+
+; end of transfer block
+
+	ret
+
+	.newblock
+
+; end of processSamplesWithoutFilter
+;-----------------------------------------------------------------------------
+
+;-----------------------------------------------------------------------------
+; processSamplesWithFilter
+;
+; Extracts each dual-byte stuffed word into two samples and runs each sample
+; through a FIR filter before storing in the processed signal buffer.
+;
+; On entry, DP should point at Variables1 page.
+;
+
+processSamplesWithFilter:
+
+;debug mks
+	ld		#5502h,A
+	call	storeRegistersAndHalt	;debug mks
+;debug mks end
+
+; start of transfer block
+
+	rptb    $1                      ; transfer all samples
+
+	; process upper byte packed in the word
+
+	ld		*AR2+, B				; load dual-byte
+	stl		B, -8, firBuffer		; store upper byte for filtering
+
+	ld		firBufferEnd, A			; convolution start point
+	stlm	A, AR0
+	ld      #00h, A					; clear for summing in MACD
+
+	rpt		numCoeffs				; FIR filter convolution
+	macd	*AR0-, coeffs1, A
+
+rect1:
+	nop                             ; this nop gets replaced with an instruction
+									; which performs the desired rectification
+									;  nop for positive half and RF, neg for
+									; negative half, abs for full
+
+	stl		A, *AR3+				; store filter output in the processed buffer
+
+
+	; process lower byte packed in the word (still in register B)
+
+	; shift/save/load to isolate lower byte and achieve proper sign extension
+
+	stl		B, 8, firBuffer			; shift lower byte to upper byte and store
+									; lower 8 bits will be zeroed
+	ld		firBuffer, 16, B		; reload, shifting to upper word
+									; this will cause sign extension
+	sth		B, 8, firBuffer			; shift byte to lower byte and save
+
+	ld		firBufferEnd, A			; convolution start point
+	stlm	A, AR0
+	ld      #00h, A					; clear for summing in MACD
+
+	rpt		numCoeffs				; FIR filter convolution
+	macd	*AR0-, coeffs1, A
+
+rect2:
+	nop                             ; this nop gets replaced with an instruction
+									; which performs the desired rectification
+									;  nop for positive half and RF, neg for
+									; negative half, abs for full
+
+$1:	stl		A, *AR3+				; store filter output in the processed buffer
+
+; end of transfer block
+
+	ret
+
+	.newblock
+
+; end of processSamplesWithFilter
 ;-----------------------------------------------------------------------------
 
 ;-----------------------------------------------------------------------------
@@ -5542,6 +5942,7 @@ main:
 	call    setupGatesDACs              ; setup gate and DAC variables
 
 	st      #00h, flags1
+	st      #00h, breakPointControl
 	st      #00h, aScanDelay
 	st      #512, softwareGain          ; default to gain of 1
 	st      #1234h, trackCount
@@ -5557,6 +5958,8 @@ main:
 	st      #00h, heartBeat
 	st      #00h, freeTimeCnt1
 	st      #00h, freeTimeCnt0
+	st		#00h, numCoeffs
+	st		#firBuffer+MAX_NUM_COEFFS-1, firBufferEnd
 
 	st      #0ffffh, interfaceGateIndex     ; default to no gate index set
 	st      #0ffffh, wallStartGateIndex     ; default to no gate index set
@@ -5610,6 +6013,10 @@ main:
 	rptz    A, #7fffh
 	stl     A, *AR1+
 
+	.if     debugger                ; perform setup for debugger functions
+	call    initDebugger
+	.endif
+
 	b       mainLoop					; start main execution loop
 
 	.newblock							; allow re-use of $ variables
@@ -5629,10 +6036,6 @@ $1:
 
 	.if     debug                   ; see debugCode function for details
 	call    debugCode
-	.endif
-
-	.if     debugger                ; perform setup for debugger functions
-	call    initDebugger
 	.endif
 
 	ld      #Variables1, DP         ; point to Variables1 page
@@ -5665,6 +6068,14 @@ $1:
 $2:	call    disableSerialTransmitter    ; call this often
 
 	call    readSerialPort          ; read data from the serial port
+
+;debug mks -- breakpoint
+	ld      #Variables1, DP
+	stm		#8, AR7
+	bitf	breakPointControl, #01h
+	cc		storeRegistersAndHalt, TC
+;debug mks end
+
 
 ; check to see if a packet is being sent and disable the serial port transmitter
 ; when done so that another core can send data on the shared McBSP1

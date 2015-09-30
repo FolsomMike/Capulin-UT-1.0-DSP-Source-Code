@@ -1,0 +1,65 @@
+
+
+================================================================
+Breakpoint Examples
+
+===================================
+Controlled Breakpoint
+
+Insert this code for a breakpoint which only triggers if appropriate bit is set in breakPointControl variable.
+After another breakpoint stops the DSP, user sets the bit in breakPointControl (address 0x81) to then enable
+this breakpoint. Useful for when this breakpoint gets encounter many times but is only of interest after
+some other breakpoint has triggered.
+
+;debug mks -- breakpoint
+	ld      #Variables1, DP
+	stm		#8, AR7
+	bitf	breakPointControl, #01h
+	cc		storeRegistersAndHalt, TC
+;debug mks end
+
+
+===================================
+
+;debug mks
+	ld		#1, A				;debug mks
+d1:	
+	call	storeRegistersAndHalt	;debug mks
+	add		#1, A
+	b		d1
+;debug mks end 	
+ 
+================================================================
+
+
+
+
+
+
+
+OVM Overflow mode. OVM determines what is loaded into the destination accumulator
+when an overflow occurs:
+
+	OVM = 0 An overflowed result from either the ALU or the multiplier?s adder
+			overflows normally in the destination accumulator.
+	OVM = 1 The destination accumulator is set to either the most positive value
+			(00 7FFF FFFFh) or the most negative value (FF 8000 0000h) upon
+			encountering an overflow.
+
+The SSBX and RSBX instructions set and reset OVM, respectively.
+
+=============================================================================
+
+FRCT	Fractional mode. When FRCT is 1, the multiplier output is left-shifted by one bit to
+		compensate for an extra sign bit.
+
+=============================================================================
+
+
+ASM  
+
+Accumulator shift mode. The 5-bit ASM field specifies a shift value within a ?16
+through 15 range and is coded as a 2s-complement value. Instructions with a
+parallel store, as well as STH, STL, ADD, SUB, and LD, use this shift capability. ASM
+can be loaded from data memory or by the LD instruction using a short-immediate
+operand.
