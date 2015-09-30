@@ -146,20 +146,21 @@ initDebugger:
 ;-----------------------------------------------------------------------------
 
 ;-----------------------------------------------------------------------------
-; storeAllRegisters
+; storeRegistersAndHalt
 ;
 ; Stores all registers in buffer debuggerVariables so they can be retrieved
 ; for display by the debugger. 
 ;
 
-storeAllRegisters:
+storeRegistersAndHalt:
 
-	ld		#debuggerVariables, DP		; point to Debugger Variables page
-
-	pshm	AR0							; save so AR0 can be used during store process
+	pshm	ST0							; save registers modified during store process
+	pshm	AR1
+	pshm	AR0							; AR0 must be last pushed as it is pop/pushed for storing
 
 	stm     #debuggerVariables, AR0     ; start of Register buffer
 
+	mar		*AR0+						; skip debug status flags
 	mvkd	AG, *AR0+
 	mvkd	AH, *AR0+
 	mvkd	AL, *AR0+
@@ -181,27 +182,30 @@ storeAllRegisters:
 	mvkd	AR6, *AR0+
 	mvkd	AR7, *AR0+
 
-	stm     #debuggerVariables, AR0     ; back to start as this is a known basepoint
-
 	popm	AR1							; retrieve the stored AR0 into AR1 so it can be properly saved
 	pshm	AR1							; save it again for final restore back to AR0
 
-	mar		*+AR0(9)					; point to AR0 storage variable
+	stm     #debuggerVariables, AR0     ; back to start as this is a known basepoint
+	mar		*+AR0(10)					; point to AR0 storage variable
 										; use mar to move AR0 as *+ARx(x) can't be used with mvkd to save to memory 			
 										; mapped registers
 
 	mvkd	AR1, *AR0+					; store the original AR0 value (currently in AR1)
 
-	mvdk	*AR0, AR1					; restore the original AR1 value
 
-	popm	AR0							; restore the original AR0 value	
+	stm     #debuggerVariables, AR0
+	orm		#01h, *AR0					; set the debug halt flag
+debuggerHalt:							; loop while flag is set
+	bitf	*AR0, #01h
+	bc	debuggerHalt, TC
 
+	popm	AR0
+	popm	AR1
+	popm	ST0
 
-debuggerHalt:
+	ret
 
-	b	debuggerHalt
-
-; end of storeAllRegisters
+; end of storeRegistersAndHalt
 ;-----------------------------------------------------------------------------
 
 ; end of debuggerCode
