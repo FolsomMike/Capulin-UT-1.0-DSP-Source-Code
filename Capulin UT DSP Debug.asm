@@ -62,7 +62,7 @@
 	.global	setFlags1
 	.global	getPeakData
 
-OFFSET_TO_AR0 .equ	11		; NOTE: modify this if variables added/removed
+OFFSET_TO_AR0 .equ	12		; NOTE: modify this if variables added/removed
 							; before the location in which AR0 is stored
 
 	.text
@@ -179,7 +179,8 @@ storeRegistersAndHalt:
 	mvkd	ST1, *AR0+
 
 	mvkd	PMST, *AR0+
-
+	mvkd	BRC, *AR0+
+									; NOTE: Adjust OFFSET_TO_AR0 if registers added above this point!
 	mvkd	AR0, *AR0+				; dummy save as AR0 has been changed during use as a pointer
 	mvkd	AR1, *AR0+
 	mvkd	AR2, *AR0+
