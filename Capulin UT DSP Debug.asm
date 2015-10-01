@@ -62,6 +62,9 @@
 	.global	setFlags1
 	.global	getPeakData
 
+OFFSET_TO_AR0 .equ	11		; NOTE: modify this if variables added/removed
+							; before the location in which AR0 is stored
+
 	.text
 
 	.if 	debug
@@ -154,6 +157,9 @@ initDebugger:
 
 storeRegistersAndHalt:
 
+	; NOTE: Adjust OFFSET_TO_AR0 constant if variables added before the storing of AR0
+	;	as that value is the offset from the beginning to the AR0 location
+
 	pshm	ST0							; save registers modified during store process
 	pshm	AR1
 	pshm	AR0							; AR0 must be last pushed as it is pop/pushed for storing
@@ -167,6 +173,7 @@ storeRegistersAndHalt:
 	mvkd	BG, *AR0+
 	mvkd	BH, *AR0+
 	mvkd	BL, *AR0+
+	mvkd	T, *AR0+
 
 	mvkd	ST0, *AR0+
 	mvkd	ST1, *AR0+
@@ -186,7 +193,7 @@ storeRegistersAndHalt:
 	pshm	AR1							; save it again for final restore back to AR0
 
 	stm     #debuggerVariables, AR0     ; back to start as this is a known basepoint
-	mar		*+AR0(10)					; point to AR0 storage variable
+	mar		*+AR0(OFFSET_TO_AR0)		; point to AR0 storage variable
 										; use mar to move AR0 as *+ARx(x) can't be used with mvkd to save to memory 			
 										; mapped registers
 
