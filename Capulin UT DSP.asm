@@ -2509,17 +2509,7 @@ $3:
 									; B contains the destination
 									; AR3 points to the buffer
 
-;debug mks
-;	stm		#7, AR7
-;	call	storeRegistersAndHalt	;debug mks
-;debug mks end
-
 	call	copyByteBufferToProgramMemory
-
-;debug mks
-;	stm		#8, AR7
-;	call	storeRegistersAndHalt	;debug mks
-;debug mks end
 
 	b       sendACK                 ; send back an ACK packet
 
@@ -2562,12 +2552,6 @@ copyByteBufferToProgramMemory:
 	stlm    B, DMSDN
 	add		#1, B					; increment to next address
 
-;debug mks
-;	stm		#0ah, AR7
-;	call	storeRegistersAndHalt	;debug mks
-;debug mks end
-
-
 	ld      *AR3+%, 8, A            ; combine bytes into a word...get high byte
 	adds    *AR3+%, A               ; add in low byte
 	ld      #Variables1, DP
@@ -2580,13 +2564,6 @@ copyByteBufferToProgramMemory:
 $1:	bitf    DMPREC, #08h            ; loop until DMA disabled
 	bc      $1, TC                  ; AutoInit is disabled, so DMA clears this
 									; enable bit at the end of the block transfer
-
-;debug mks
-;	stm		#0bh, AR7
-;	call	storeRegistersAndHalt	;debug mks
-;debug mks end
-
-
 
 $8:	nop								; end of repeat block
 
@@ -3626,12 +3603,6 @@ $4:	stl     A, *AR7+
 storeWordInMapBuffer:
 
 	ld      #Variables1, DP         ; point to Variables1 page
-
-;debug mks
-;	ld		#200, A
-;	nop
-;	nop
-;debug mks
 
 	pshm	AL						; save the value to be buffered
 
@@ -5725,7 +5696,8 @@ processSamplesWithFilter:
 
 ;debug mks
 ;	ld		#5502h,A
-;	call	storeRegistersAndHalt	;debug mks
+	stm		#0001h, AR7	
+	call	storeRegistersAndHalt	;debug mks
 ;debug mks end
 
 ; start of transfer block
