@@ -348,6 +348,7 @@ DSP_ACKNOWLEDGE					.equ	127
 	.bss	fpgaADSampleBufEnd,1	; end of the buffer where FPGA stores A/D samples
 	.bss	coreID,1				; ID number of the DSP core (1-4)
 	.bss	numCoeffs,1				; number of coefficients for FIR filter
+	.bss	numFIRLoops,1			; one less than numCoeffs to work with repeat opcode
 	.bss	firBufferEnd,1			; last position of FIR buffer (based on number of coefficients)
 	.bss	filterScale,1			; scaling for FIR filter output (number of bits to right shift)
 	.bss	getAScanBlockPtr,1		; points to next data to send to host
@@ -2461,16 +2462,21 @@ handleSetFilterCommand:
 	ld      #MAX_NUM_COEFFS, A			; limit to max
 
 $1:	stl     A, numCoeffs			; store value
+	sub		#1, A					; subtract one for use as FIR repeat counter
+	stl		A, numFIRLoops
 
 	;calculate the ending address of the FIR filter buffer based on the number
 	;of coefficients -- 0 coeffs no problem as filter won't be run in that case
 
+	ld		numCoeffs, A
 	add     #firBuffer, A
 	sub     #1, A
 	stl		A, firBufferEnd
 
-	ld      *AR3+%, A               ; get filter output scaling value
-	stl     A, filterScale			; store value
+	ld      *AR3+%, 8, A            ; get filter output scaling value
+	stl     A, filterScale			; this upshift/downshift used to set sign
+	ld		filterScale, A			;   properly from byte to word
+	stl		A, -8, filterScale
 
 	; no need to skip AR3 past end of packet as readSerialPort uses its own pointer
 
@@ -5642,7 +5648,7 @@ processSamplesWithoutFilter:
 
 	rptb    $1                      ; transfer all samples
 
-rect3:
+rect1:
 	nop                             ; this nop gets replaced with an instruction
 									; which performs the desired rectification
 									;  nop for positive half and RF, neg for
@@ -5660,7 +5666,7 @@ rect3:
 	ld      scratch1, 16, A         ; reload the value into upper A, extending
 									; the sign
 
-rect4:
+rect2:
 	nop                             ; this nop gets replaced with an instruction
 									; which performs the desired rectification
 									;  nop for positive half and RF, neg for
@@ -5691,14 +5697,33 @@ $1:
 ;
 
 processSamplesWithFilter:
-	
-	ret	;debug mks -- remove this
 
 ;debug mks
-;	ld		#5502h,A
 	stm		#0001h, AR7	
 	call	storeRegistersAndHalt	;debug mks
 ;debug mks end
+
+;debug mks
+; put sample data in buffers
+
+	stm		#4001h, AR0
+	st		#0ffffh, *AR0+
+	st		#07f80h, *AR0+
+	st		#0ff00h, *AR0+
+	st		#00ffh, *AR0+
+	st		#0102h, *AR0+
+
+	ld		#firBuffer, DP
+	st		#1234h, firBuffer
+
+;debug mks
+
+	ld		#firBuffer, A			; save in AR1 for quick access without modifying DP
+	stlm	A, AR1
+
+	ld      #Variables1, DP
+
+	ld		filterScale, ASM		; get number of bits to right-shift filter output to fit into a word
 
 ; start of transfer block
 
@@ -5706,49 +5731,103 @@ processSamplesWithFilter:
 
 	; process upper byte packed in the word
 
-	ld		*AR2+, B				; load dual-byte
-	stl		B, -8, firBuffer		; store upper byte for filtering
+	ld		*AR2+, B				; load dual-byte with sign extension for high byte
+	stl		B, -8, *AR1				; store upper byte at top of filter buffer for filtering
 
-	ld		firBufferEnd, A			; convolution start point
+;debug mks
+	stm		#0002h, AR7	
+	call	storeRegistersAndHalt	;debug mks
+;debug mks end
+
+	ld		firBufferEnd, A			; convolution start point (from bottom of buffer)
 	stlm	A, AR0
 	ld      #00h, A					; clear for summing in MACD
 
-	rpt		numCoeffs				; FIR filter convolution
+;debug mks
+	stm		#0003h, AR7	
+	call	storeRegistersAndHalt	;debug mks
+;debug mks end
+
+	rpt		numFIRLoops				; FIR filter convolution
 	macd	*AR0-, coeffs1, A
 
-rect1:
+;debug mks
+	stm		#0004h, AR7	
+	call	storeRegistersAndHalt	;debug mks
+;debug mks end
+
+rect3:
 	nop                             ; this nop gets replaced with an instruction
 									; which performs the desired rectification
 									;  nop for positive half and RF, neg for
 									; negative half, abs for full
 
-	stl		A, *AR3+				; store filter output in the processed buffer
-
+	stl		A, ASM, *AR3+			; store filter output in the processed buffer
+									; result is shifted by ASM bits
+;debug mks
+	stm		#0005h, AR7	
+	call	storeRegistersAndHalt	;debug mks
+;debug mks end
 
 	; process lower byte packed in the word (still in register B)
 
 	; shift/save/load to isolate lower byte and achieve proper sign extension
+	;  the top of the filter buffer is used as a scratch variable for this operation
 
-	stl		B, 8, firBuffer			; shift lower byte to upper byte and store
+	stl		B, 8, *AR1				; shift lower byte to upper byte and store
 									; lower 8 bits will be zeroed
-	ld		firBuffer, 16, B		; reload, shifting to upper word
-									; this will cause sign extension
-	sth		B, 8, firBuffer			; shift byte to lower byte and save
+;debug mks
+	stm		#0006h, AR7	
+	call	storeRegistersAndHalt	;debug mks
+;debug mks end
 
-	ld		firBufferEnd, A			; convolution start point
+	ld		*AR1, 16, B				; reload, shifting to upper byte of upper word
+									; this causes the proper sign extension
+
+;debug mks
+	stm		#0007h, AR7	
+	call	storeRegistersAndHalt	;debug mks
+;debug mks end
+
+	sth		B, -8, *AR1				; shift byte to lower byte and save at top of filter buffer for filtering
+
+;debug mks
+	stm		#0008h, AR7	
+	call	storeRegistersAndHalt	;debug mks
+;debug mks end
+
+	ld		firBufferEnd, A			; convolution start point (from bottom of buffer)
 	stlm	A, AR0
 	ld      #00h, A					; clear for summing in MACD
 
-	rpt		numCoeffs				; FIR filter convolution
+;debug mks
+	stm		#0009h, AR7	
+	call	storeRegistersAndHalt	;debug mks
+;debug mks end
+
+	rpt		numFIRLoops				; FIR filter convolution
 	macd	*AR0-, coeffs1, A
 
-rect2:
+;debug mks
+	stm		#000ah, AR7	
+	call	storeRegistersAndHalt	;debug mks
+;debug mks end
+
+
+rect4:
 	nop                             ; this nop gets replaced with an instruction
 									; which performs the desired rectification
 									;  nop for positive half and RF, neg for
 									; negative half, abs for full
 
-$1:	stl		A, *AR3+				; store filter output in the processed buffer
+$1:	stl		A, ASM, *AR3+			; store filter output in the processed buffer
+									; result is shifted by ASM bits
+;debug mks
+	stm		#000bh, AR7	
+	call	storeRegistersAndHalt	;debug mks
+;debug mks end
+
+
 
 ; end of transfer block
 
@@ -6003,6 +6082,23 @@ main:
 	stlm    A, AR1
 	rptz    A, #7fffh
 	stl     A, *AR1+
+
+	; clear FIR filter buffer
+	stm    	#firBuffer, AR1
+	rptz    A, #MAX_NUM_COEFFS		; this will clear one more than MAX_NUM_COEFFS -- the buffer has an extra location
+	stl     A, *AR1+
+
+	;debug mks -- fill FIR filter buffer with incrementing value
+	stm		#0, AR0
+	stm    	#firBuffer, AR1
+	stm		#MAX_NUM_COEFFS, BRC	; this will clear one more than MAX_NUM_COEFFS -- the buffer has an extra location
+	rptb    $1
+	ldm		AR0, A
+	stl     A, *AR1+
+$1:	mar		*AR0+
+	;debug mks
+
+	;debug mks
 
 	.if     debugger                ; perform setup for debugger functions
 	call    initDebugger
