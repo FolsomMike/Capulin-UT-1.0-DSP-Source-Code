@@ -20,6 +20,26 @@ some other breakpoint has triggered.
 
 
 ===================================
+Use these examples for always-enabled breakpoints.
+One stores a descriptor code in A, the other in AR7.
+Use a different code for each breakpoint to know which one caused the halt.
+
+
+;debug mks
+	ld		#01h,A
+	call	storeRegistersAndHalt	;debug mks
+;debug mks end
+
+;debug mks
+	stm		#6, AR7
+	call	storeRegistersAndHalt	;debug mks
+;debug mks end
+
+
+===================================
+Use this code to create a continuous breakpoint which simply increments the A register -- used to verify that
+the breakpoint system is working.
+
 
 ;debug mks
 	ld		#1, A				;debug mks

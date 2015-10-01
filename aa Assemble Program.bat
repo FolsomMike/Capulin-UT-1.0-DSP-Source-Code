@@ -16,4 +16,4 @@
 
 "..\..\..\TMS320C54x Tools\asm500.exe" -a "%~1.abs" 1>>results.txt 2>&1
 
-@rem pause
+copy "CapulinUTDSP.hex" "c:\Users\Mike\Documents\7 - Java Projects\Chart\DSP\"
