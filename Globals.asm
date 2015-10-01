@@ -15,7 +15,7 @@ debugger .set 1		; set to zero if on-board debugging not used
 ;
 
 	.global	initDebugger
-	.global storeAllRegisters
+	.global storeRegistersAndHalt
 	.global debuggerVariables
 
 	.global AG_Register

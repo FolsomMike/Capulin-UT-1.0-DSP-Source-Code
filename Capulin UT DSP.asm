@@ -771,7 +771,7 @@ Data	.word	55aah			; used to mark the first page of data
 ; the values are overwritten using a DMA channel, the only way to write to
 ; program memory
 
-coeffs1	.word	0,1,2,3,4,5,6,7,8,9,0,1,2,3,4,5,6,7,8,9,0,1,2,3,4,5,6,7,8,9,0,1
+coeffs1	.word	55h,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0aah
 
 ; end of Variables
 ;-----------------------------------------------------------------------------
@@ -1020,8 +1020,12 @@ setupDMA3:
 	;~~~~~000~~~~~~~~ (SIND) No modify on source address
 	;~~~~~~~~01~~~~~~ (DMS) Source in data space
 	;~~~~~~~~~~0~~~~~ Reserved
-	;~~~~~~~~~~~001~~ (DIND) Post increment destination address
+	;~~~~~~~~~~~001~~ (DIND) Post increment destination address (see note 1 below)
 	;~~~~~~~~~~~~~~00 (DMD) Destination in program space
+
+; Note 1
+; Post increment does not seem to work when transferring one word at at time.
+; Seems to be used to increment between words when multiple words sent in one block.
 
 
 	; set all source and destination data and memory page pointers
@@ -2268,8 +2272,6 @@ $6:	stm     DMDST3, DMSA            ; set destination address to position of fir
 	stm     #rect4, DMSDN           ; instruction which needs to be changed
 	call	runAndWaitOnDMA3		; in the sample processing loop
 
-	ld      #Variables1, DP
-
 	b       sendACK                 ; send back an ACK packet
 
 	.newblock                       ; allow re-use of $ variables
@@ -2438,8 +2440,6 @@ handleResetMappingCommand:
 
 handleSetFilterCommand:
 
-;	b       sendACK                 ; debug mks -- remove this
-
 	ld      #Variables1, DP
 
 	bitf	coreID, #01h			; check core, only A or C can modify, exit if B or D
@@ -2449,6 +2449,7 @@ handleSetFilterCommand:
 
 	ld      *AR3+%, A               ; get packet Descriptor Code
 	bc      $2, ANEQ                ; check for code 0, skip if not
+
 
 	; handle Descriptor Code 0 by storing number of coefficients and
 	; the right shift scale value
@@ -2477,11 +2478,6 @@ $1:	stl     A, numCoeffs			; store value
 
 $2:
 
-;debug mks
-	stm		#6, AR7
-	call	storeRegistersAndHalt	;debug mks
-;debug mks end
-
 	; handle all other Descriptor Codes by storing the coefficients in the packet
 	; into the list in program memory
 
@@ -2489,17 +2485,11 @@ $2:
 	bc      $3, BLEQ            			 ; A<=0 if A was not over max
 
 	; ignore packet due to invalid Descriptor Code
-
 	; no need to skip AR3 past end of packet as readSerialPort uses its own pointer
 
 	b       sendACK                 ; send back an ACK packet
 
 $3:
-
-;debug mks
-	stm		#7, AR7
-	call	storeRegistersAndHalt	;debug mks
-;debug mks end
 
 	; store the values in the packet in the coefficients list
 
@@ -2507,15 +2497,29 @@ $3:
 	;  (code 1-> first set in list, code 2-> second set, etc.)
 
 	stm     #NUM_COEFFS_IN_PKT, T	; number of coefficients in each packet
-	sub     #1, A					
+	sub     #1, A					; packet #1 is zeroeth offset
 	stl     A, scratch1             ; save to multiply by T register
-	mpyu    scratch1, A             ; num coeffs in group x group number
+	mpyu    scratch1, A             ; A = num coeffs in group x group number (in T)
+	ld		#coeffs1, B		
+	stl		B, scratch2				; save reload as unsigned to avoid sign extension
+	ldu		scratch2, B				;  (reset/set SXM bit requires nop for latency so actually more opcodes)
+	add		A, 0, B					; compute offset into coeffs1 table
 
-	ld		#coeffs1, B				; destination address is coefficient list
+	ld		#4, A					; packet has 4 words (8 bytes) to transfer
+									; B contains the destination
+									; AR3 points to the buffer
+
+;debug mks
+;	stm		#7, AR7
+;	call	storeRegistersAndHalt	;debug mks
+;debug mks end
 
 	call	copyByteBufferToProgramMemory
 
-	ld      #Variables1, DP
+;debug mks
+;	stm		#8, AR7
+;	call	storeRegistersAndHalt	;debug mks
+;debug mks end
 
 	b       sendACK                 ; send back an ACK packet
 
@@ -2536,35 +2540,53 @@ $3:
 ;
 ; A register = number of words to be transferred.
 ; B register = destination address
-; AR3 = address of high order byte of first word 
+; AR3 = address of high order byte of first word in circular buffer
 ; 
 ; DMA3 already set up to transfer from variable dma3Source
 ; DMA3 already set up to auto post increment the destination address
+;
+; Although the DMA3 is set up to post-increment the destination address, this
+; does not seem to work when transferring one word at at time. It seems to be
+; used to increment between words when multiple words sent in one block.
 ;
 
 copyByteBufferToProgramMemory:
 
 	sub     #1, A                   ; subtract 1 to account for loop behavior.
 	stlm    A, BRC					; store transfer count in loop counter
-
-	stm     DMDST3, DMSA            ; set destination address
-	stlm    B, DMSDN				; DMDST3 will be incremented automatically
+	nop								; latency fixer for store to BRC
 
 	rptb    $8
 
-	ld      #Variables1, DP
+	stm     DMDST3, DMSA            ; set destination address
+	stlm    B, DMSDN
+	add		#1, B					; increment to next address
+
+;debug mks
+;	stm		#0ah, AR7
+;	call	storeRegistersAndHalt	;debug mks
+;debug mks end
+
 
 	ld      *AR3+%, 8, A            ; combine bytes into a word...get high byte
 	adds    *AR3+%, A               ; add in low byte
+	ld      #Variables1, DP
 	stl     A, dma3Source           ; store in variable used for DMA3 transfers
 
-	ld      #00, DP
+	ld		#00h, DP
 	orm     #08h, DMPREC            ; use orm to set only the desired bit
 									; orm to memory mapped reg requires DP = 0
 
 $1:	bitf    DMPREC, #08h            ; loop until DMA disabled
 	bc      $1, TC                  ; AutoInit is disabled, so DMA clears this
 									; enable bit at the end of the block transfer
+
+;debug mks
+;	stm		#0bh, AR7
+;	call	storeRegistersAndHalt	;debug mks
+;debug mks end
+
+
 
 $8:	nop								; end of repeat block
 
@@ -5637,11 +5659,6 @@ $2:	add     #2, B                   ; increment the flag by 2 (each DSP gets eve
 
 processSamplesWithoutFilter:
 
-;debug mks
-	ld		#5501h,A
-	call	storeRegistersAndHalt	;debug mks
-;debug mks end
-
 	ld      #-8, ASM                ; load constant into ASM register
 									; for parallel LD||ST, this causes shift of
 									; -24 for the save (shift=ASM-16)
@@ -5703,10 +5720,12 @@ $1:
 ;
 
 processSamplesWithFilter:
+	
+	ret	;debug mks -- remove this
 
 ;debug mks
-	ld		#5502h,A
-	call	storeRegistersAndHalt	;debug mks
+;	ld		#5502h,A
+;	call	storeRegistersAndHalt	;debug mks
 ;debug mks end
 
 ; start of transfer block
