@@ -2443,9 +2443,6 @@ handleSetFilterCommand:
 
 	ld      #Variables1, DP
 
-	bitf	coreID, #01h			; check core, only A or C can modify, exit if B or D
-	bc		sendACK, NTC			; core id = 1/2/3/4, B&D will have bit 0 cleared
-
 	mar     *AR3+%                  ; skip past the packet size byte
 
 	ld      *AR3+%, A               ; get packet Descriptor Code
@@ -2483,6 +2480,9 @@ $1:	stl     A, numCoeffs			; store value
 	b       sendACK                 ; send back an ACK packet
 
 $2:
+
+	bitf	coreID, #01h			; check core, only A or C can modify coefficient table
+	bc		sendACK, NTC			; core id = 1/2/3/4, B&D will have bit 0 cleared so exit
 
 	; handle all other Descriptor Codes by storing the coefficients in the packet
 	; into the list in program memory
@@ -5699,22 +5699,22 @@ $1:
 processSamplesWithFilter:
 
 ;debug mks
-	stm		#0001h, AR7	
-	call	storeRegistersAndHalt	;debug mks
+;	stm		#0001h, AR7	
+;	call	storeRegistersAndHalt	;debug mks
 ;debug mks end
 
 ;debug mks
 ; put sample data in buffers
 
-	stm		#4001h, AR0
-	st		#0ffffh, *AR0+
-	st		#07f80h, *AR0+
-	st		#0ff00h, *AR0+
-	st		#00ffh, *AR0+
-	st		#0102h, *AR0+
+;	stm		#4001h, AR0
+;	st		#0ffffh, *AR0+
+;	st		#07f80h, *AR0+
+;	st		#0ff00h, *AR0+
+;	st		#00ffh, *AR0+
+;	st		#0102h, *AR0+
 
-	ld		#firBuffer, DP
-	st		#1234h, firBuffer
+;	ld		#firBuffer, DP
+;	st		#1234h, firBuffer
 
 ;debug mks
 
@@ -5735,8 +5735,8 @@ processSamplesWithFilter:
 	stl		B, -8, *AR1				; store upper byte at top of filter buffer for filtering
 
 ;debug mks
-	stm		#0002h, AR7	
-	call	storeRegistersAndHalt	;debug mks
+;	stm		#0002h, AR7	
+;	call	storeRegistersAndHalt	;debug mks
 ;debug mks end
 
 	ld		firBufferEnd, A			; convolution start point (from bottom of buffer)
@@ -5744,16 +5744,16 @@ processSamplesWithFilter:
 	ld      #00h, A					; clear for summing in MACD
 
 ;debug mks
-	stm		#0003h, AR7	
-	call	storeRegistersAndHalt	;debug mks
+;	stm		#0003h, AR7	
+;	call	storeRegistersAndHalt	;debug mks
 ;debug mks end
 
 	rpt		numFIRLoops				; FIR filter convolution
 	macd	*AR0-, coeffs1, A
 
 ;debug mks
-	stm		#0004h, AR7	
-	call	storeRegistersAndHalt	;debug mks
+;	stm		#0004h, AR7	
+;	call	storeRegistersAndHalt	;debug mks
 ;debug mks end
 
 rect3:
@@ -5765,8 +5765,8 @@ rect3:
 	stl		A, ASM, *AR3+			; store filter output in the processed buffer
 									; result is shifted by ASM bits
 ;debug mks
-	stm		#0005h, AR7	
-	call	storeRegistersAndHalt	;debug mks
+;	stm		#0005h, AR7	
+;	call	storeRegistersAndHalt	;debug mks
 ;debug mks end
 
 	; process lower byte packed in the word (still in register B)
@@ -5777,23 +5777,23 @@ rect3:
 	stl		B, 8, *AR1				; shift lower byte to upper byte and store
 									; lower 8 bits will be zeroed
 ;debug mks
-	stm		#0006h, AR7	
-	call	storeRegistersAndHalt	;debug mks
+;	stm		#0006h, AR7	
+;	call	storeRegistersAndHalt	;debug mks
 ;debug mks end
 
 	ld		*AR1, 16, B				; reload, shifting to upper byte of upper word
 									; this causes the proper sign extension
 
 ;debug mks
-	stm		#0007h, AR7	
-	call	storeRegistersAndHalt	;debug mks
+;	stm		#0007h, AR7	
+;	call	storeRegistersAndHalt	;debug mks
 ;debug mks end
 
 	sth		B, -8, *AR1				; shift byte to lower byte and save at top of filter buffer for filtering
 
 ;debug mks
-	stm		#0008h, AR7	
-	call	storeRegistersAndHalt	;debug mks
+;	stm		#0008h, AR7	
+;	call	storeRegistersAndHalt	;debug mks
 ;debug mks end
 
 	ld		firBufferEnd, A			; convolution start point (from bottom of buffer)
@@ -5801,16 +5801,16 @@ rect3:
 	ld      #00h, A					; clear for summing in MACD
 
 ;debug mks
-	stm		#0009h, AR7	
-	call	storeRegistersAndHalt	;debug mks
+;	stm		#0009h, AR7	
+;	call	storeRegistersAndHalt	;debug mks
 ;debug mks end
 
 	rpt		numFIRLoops				; FIR filter convolution
 	macd	*AR0-, coeffs1, A
 
 ;debug mks
-	stm		#000ah, AR7	
-	call	storeRegistersAndHalt	;debug mks
+;	stm		#000ah, AR7	
+;	call	storeRegistersAndHalt	;debug mks
 ;debug mks end
 
 
@@ -5823,8 +5823,8 @@ rect4:
 $1:	stl		A, ASM, *AR3+			; store filter output in the processed buffer
 									; result is shifted by ASM bits
 ;debug mks
-	stm		#000bh, AR7	
-	call	storeRegistersAndHalt	;debug mks
+;	stm		#000bh, AR7	
+;	call	storeRegistersAndHalt	;debug mks
 ;debug mks end
 
 
