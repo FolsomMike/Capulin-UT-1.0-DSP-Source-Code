@@ -104,10 +104,28 @@
 * the other channel. This can happen because the DMA channels run
 * asynchronously to the code which is executing the ORM.
 *
-* Currently, this code does not have a problem because only two
-* channels are being used: one to handle the serial port and one to
-* write code to program memory by various functions. Since the serial
-* port is in ABU mode it is always active so there is no conflict.
+* Currently, this code does not have a problem because only three
+* channels are being used: two to handle the serial port and one to
+* write code to program memory by various functions. 
+*
+* Since the serial port receive DMA1 is in ABU (Auto Buffering) mode
+* it is always active so there is no conflict.
+*
+* Serial port send DMA2 is in Multiframe mode, so it could cause a
+* problem, but DMA3 (also in Multiframe mode) is used very infrequently
+* to write data to program memory and only in response to a command
+* from host. It is very unlikely that DMA2 is in the middle of a
+* transmission when DMA3 is active, but sending AScan data and Wall
+* Map data require extensive DMA2 use, so it is more likely that a
+* conflict could occur then.
+*
+* Possible solution: before enabling DMA3, make sure DMA2 is not active.
+* Since DMA3 use is infrequent, it would not cause any noticable delay.
+* However, if DMA3 is used in the future to transfer data between cores,
+* this could be problem if it is used extensively, mainly if DMA2 is
+* transferring map data which keeps it active a lot. The errata manual
+* suggests looking at the state of other active channels and only enabling
+* a channel if no other channel is near the end of its buffer.
 *
 * If more DMA channels are to be used, precautions will need to be taken
 * as suggested in the Errata manual.
@@ -2226,7 +2244,7 @@ setRectification:
 	ld      #Variables1, DP
 
 	bitf	coreID, #01h			; check core, only A or C can modify, exit if B or D
-	rc		NTC						; core id = 1/2/3/4, B&D will have bit 0 cleared
+	bc		sendACK, NTC			; core id = 1/2/3/4, B&D will have bit 0 cleared
 
 	mar     *AR3+%                  ; skip past the packet size byte
 
