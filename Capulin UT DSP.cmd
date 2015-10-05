@@ -67,10 +67,12 @@ MEMORY
 SECTIONS
 {
 
-	.data:		load = SharedP0
-	.text:		load = SharedP0
-	vectors:	load = 0ff80h
-	.bss:		load = DataP0
+	.data:			load = SharedP0
+	.text:			load = SharedP0
+	vectors:		load = 0ff80h
+	TimerInterrupt:	load = 0ffcch
+	DMA2Interrupt:	load = 0ffe8h
+	.bss:			load = DataP0
 
 }/* end of SECTIONS */
 

@@ -151,6 +151,7 @@
 	.global gateBuffer
 	.global gateResultsBuffer
 
+
 ;-----------------------------------------------------------------------------
 ; Miscellaneous Defines
 ;
@@ -334,9 +335,17 @@ DSP_ACKNOWLEDGE					.equ	127
 ; as being at 0x00 so it can be found at 0xff80 + 0x00 = 0xff80.
 ;
 
-	.sect	"vectors"			; link this at 0xff80
+	.sect	"vectors"				; link this at 0xff80
 
-	b		main
+	b		main					; reset vector
+
+	.sect	"TimerInterrupt"		; link this a 0xffcc
+
+	b		handleTimerInterrupt	; Timer rollover interrupt
+
+	.sect	"DMA2Interrupt"			; link this a 0xffe8
+
+	b		handleDMA2Interrupt		; BSP #1 Receive int or DMA Channel 2 int
 
 ; end of Vectors
 ;-----------------------------------------------------------------------------
@@ -798,6 +807,101 @@ coeffs1	.word	55h,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0a
 	.text
 
 ;-----------------------------------------------------------------------------
+; handleTimerInterrupt
+;
+; Handles interrupts from the Timer.
+;
+; Currently, the interrupt is only used to disable/release the shared serial
+; port transmitter so that other DSP cores can use it.
+;
+; The timer and DMA2 interrupts are disabled as they are only used once after
+; each serial transmission.
+;
+
+handleTimerInterrupt:
+
+	andm	#~TINT, IMR		; disable timer interrupts
+	andm	#~DMAC2, IMR	; disable DMA2 interrupts
+
+	call	disableSerialTransmitter
+
+	rete
+
+	.newblock						; allow re-use of $ variables
+
+; end of handleTimerInterrupt
+;-----------------------------------------------------------------------------
+
+;-----------------------------------------------------------------------------
+; handleDMA2Interrupt
+;
+; Handles interrupts from DMA2 which handles serial port transmission.
+;
+; Sets up the Timer to interrupt after a delay which is long enough to insure
+; that the byte in the XSR register is shifted out...the Timer interrupt will
+; release the shared transmitter so other DSP cores can use it.
+;
+
+handleDMA2Interrupt:
+
+	ld		#00h, DP
+
+	orm		#TSS, TCR		; stop timer
+	stm		#40000, PRD		; delay this many counts (10 nS each)
+	andm	#~TSS, TCR		; start timer
+	orm		#TRB, TCR		; reset timer to force reload of all values
+
+	orm		#TINT, IFR		; clear any pending timer interrupts
+	orm		#TINT, IMR		; enable timer interrupts
+
+	rete
+
+	.newblock						; allow re-use of $ variables
+
+; end of handleDMA2Interrupt
+;-----------------------------------------------------------------------------
+
+;-----------------------------------------------------------------------------
+; setupTimer
+;
+; Prepares the Timer for use. 
+;
+; The main counter is driven by the prescalar, which decrements by one at
+; every CPU clock (10nS). Once the prescalar reaches zero, the 16-bit counter
+; decrements by one. When the 16-bit counter decrements to zero, a maskable
+; interrupt (TINT) is generated clock.
+;
+; 
+
+setupTimer:
+
+	; setup with prescaler of 1 ~ TIM register will be decremented every 10nS
+
+	stm #0000000000000001b, TCR
+
+	;0000~~~~~~~~~~~~ reserved
+	;~~~~0~~~~~~~~~~~ (SOFT) debugger control 
+	;~~~~~0~~~~~~~~~~ (FREE) debugger control
+	;~~~~~~0000~~~~~~ (PSC) prescalar counter, only when PREMD = 0 (in TSCR) putting prescaler to direct mode
+	;~~~~~~~~~~0~~~~~ (TRB) 1 = Auto timer reload
+	;~~~~~~~~~~~0~~~~ (TSS) 0 = timer running, 1 = timer stopped
+	;~~~~~~~~~~~~0001 (TDDR) When PREMD = 0, TDDR is a 4-bit reload prescalar
+    ; 						 When PREMD = 1, value in TDDR selects from a list of prescalar values
+
+	; setup prescaler for direct operation ~ TDDR is the prescale countdown value
+
+	stm #0000000000000000b, TSCR
+
+	;0000~~~~~~~~~~~~ reserved
+	;~~~~0~~~~~~~~~~~ (PREMD) 0 = TDDR is prescale value, 1 = TDDR selects from list of values
+	;~~~~~00000000000 reserved
+
+	.newblock						; allow re-use of $ variables
+
+; end of setupTimer
+;-----------------------------------------------------------------------------
+
+;-----------------------------------------------------------------------------
 ; setupDMA
 ;
 ; Sets up DMA channels.
@@ -822,10 +926,9 @@ setupDMA:
 
 	call	setupDMA3
 
-
 	; setup registers common to all channels
 
-	stm #0100011000000010b, DMPREC
+	stm #0100011010000010b, DMPREC
 
 	;0~~~~~~~~~~~~~~~ (FREE) DMA stops on emulation stop
 	;~1~~~~~~~~~~~~~~ (IAUTO) set for '5441 to use separate reload registers
@@ -835,7 +938,7 @@ setupDMA:
 	;~~~~~1~~~~~~~~~~ (DPRC[2]) Channel 2 high priority
 	;~~~~~~1~~~~~~~~~ (DPRC[1]) Channel 1 high priority
 	;~~~~~~~0~~~~~~~~ (DPRC[0]) Channel 0 low priority
-	;~~~~~~~~00~~~~~~ (INTOSEL) N/A here as interrupts are disabled
+	;~~~~~~~~10~~~~~~ (INTOSEL) assign interrupts to vectors (see Note 2 below)
 	;~~~~~~~~~~0~~~~~ (DE[5]) Channel 5 disabled
 	;~~~~~~~~~~~0~~~~ (DE[4]) Channel 4 disabled
 	;~~~~~~~~~~~~0~~~ (DE[3]) Channel 3 disabled (enabled when time to send)
@@ -843,9 +946,22 @@ setupDMA:
 	;~~~~~~~~~~~~~~1~ (DE[1]) Channel 1 enabled
 	;~~~~~~~~~~~~~~~0 (DE[0]) Channel 0 disabled
 
-	; Note - The basic *54x used a common set of reload registers for all
+	; Note 1 - The basic *54x used a common set of reload registers for all
 	; channels. The TMS320VC5441 has separate reload registers for each channel.
 	; To enable the use of the separate registers set bit 14 (IAUTO) of DMPREC.
+
+	; Note 2:
+	
+	; Setting INTOSEL 10b assigns the following interrupt mask/flags to the DMAs
+	; listed below each:
+	;
+	;  IMR/IFR[6] IMR/IFR[7] IMR/IFR[10] IMR/IFR[11]
+	;   DMAC0 		DMAC1 		DMAC2 		DMAC3
+	;
+	; Each of these mask/flag sets is shared with a serial port; for this program
+	; they are assigned to the DMAs so their interrupts can be used.
+	; See section "3.2.1.5 DMA Channel Interrupt Selection" in the document
+	; "TMS320VC5441 Fixed-Point Digital Signal Processor Data Manual".
 
 	ret
 
@@ -932,6 +1048,19 @@ setupDMA1:
 ; CAUTION: Using multiple DMA channels can cause issues. See note at the
 ; top of the file title "Multiple DMA Channels Issue" for details.
 ;
+; In this case, there is one frame per block, so sending one frame completes
+; one block. The number of blocks is not specified in a register  as one
+; block is sent -- when all the frame have been sent that is the end of the
+; block.
+;
+; The manual "TMS320C54x Volume 5 Enhanced Peripherals " states "The element
+; count and frame count can be used together to allow up to 65536 transfers.
+; The total number of transfers is the product of the element count and the
+; frame count." Later though in section 3.2.3.5 under "Multiframe Mode" it
+; states that each frame can contain 65536 elements and each block can
+; contain 256 frames, which would be a transfer of 256 X 65536...much
+; larger than the 65536 specified in the earlier section.
+;
 
 setupDMA2:
 
@@ -941,8 +1070,8 @@ setupDMA2:
 	stm		DMDST2, DMSA			;set destination address to DXR11
 	stm		DXR11, DMSDN
 
-	stm		DMCTR2, DMSA			;set element transfer count (this gets
-	stm		#0h, DMSDN				; adjusted for each type of packet)
+	stm		DMCTR2, DMSA			;set elements per frame (this gets
+	stm		#0h, DMSDN				; set each time a packet is sent)
 
 	stm		DMSFC2, DMSA
 	stm		#0110000000000000b, DMSDN
@@ -950,22 +1079,21 @@ setupDMA2:
 	;0110~~~~~~~~~~~~ (DSYN) McBSP1 transmit sync event
 	;~~~~0~~~~~~~~~~~ (DBLW) Single-word mode
 	;~~~~~000~~~~~~~~ Reserved
-	;~~~~~~~~00000000 (Frame Count) 1 frame (desired count - 1)
+	;~~~~~~~~00000000 (Frame Count) 1 frame per block (desired count - 1)
 
 	stm		DMMCR2, DMSA
-	stm		#0000000101000001b, DMSDN
+	stm		#0100000101000001b, DMSDN
 
-	;0~~~~~~~~~~~~~~~ (AUTOINIT) Autoinitialization disabled - *see note below
-	;~0~~~~~~~~~~~~~~ (DINM) DMA Interrupts disabled
-	;~~0~~~~~~~~~~~~~ (IMOD) Interrupt at full buffer
-	;~~~0~~~~~~~~~~~~ (CTMOD) Multiframe mode
+	;0~~~~~~~~~~~~~~~ (AUTOINIT) 0 = Autoinitialization disabled - *see note below
+	;~1~~~~~~~~~~~~~~ (DINM) 1 = DMA Interrupts generated based on IMOD bit
+	;~~0~~~~~~~~~~~~~ (IMOD) 0 = Interrupt at frame complete
+	;~~~0~~~~~~~~~~~~ (CTMOD) 0 = Multiframe mode
 	;~~~~0~~~~~~~~~~~ Reserved
 	;~~~~~001~~~~~~~~ (SIND) post increment source address after each transfer
 	;~~~~~~~~01~~~~~~ (DMS) Source in data space
 	;~~~~~~~~~~0~~~~~ Reserved
 	;~~~~~~~~~~~000~~ (DIND)  No modify on destination address (DXR11)
 	;~~~~~~~~~~~~~~01 (DMD) Destination in data space
-
 
 	; Note regarding Autoinitialization
 	;  AutoInit cannot be used to just reload the registers as it also restarts
@@ -1033,7 +1161,7 @@ setupDMA3:
 
 	;0~~~~~~~~~~~~~~~ (AUTOINIT) Autoinitialization disabled - *see note below
 	;~0~~~~~~~~~~~~~~ (DINM) DMA Interrupts disabled
-	;~~0~~~~~~~~~~~~~ (IMOD) Interrupt at full buffer
+	;~~0~~~~~~~~~~~~~ (IMOD) Interrupt at frame complete
 	;~~~0~~~~~~~~~~~~ (CTMOD) Multiframe mode
 	;~~~~0~~~~~~~~~~~ Reserved
 	;~~~~~000~~~~~~~~ (SIND) No modify on source address
@@ -1596,8 +1724,8 @@ $2:
 ; DMA channel to start sending the data.  The serial port is then disabled
 ; elsewhere upon completion so that other DSP cores can use it.
 ;
-; IMPORTANT: See responseDelay header notes for info regarding timing delays
-;	required to avoid collision between the DSP cores sharing the port.
+; The DMA2 interrupt on frame completed will be enabled so the shared
+; transmitter can be released after transmission is complete.
 ;
 ; On entry, data to be sent should be stored in SERIAL_PORT_XMT_BUFFER
 ; starting at array position 6.  The length of the data should be stored
@@ -1685,9 +1813,15 @@ sendPacket:
 	ld      #0ffh, A
 	stlm    A, DXR11
 
+; setup interrupt on frame sent to force release of transmitter when done
+
+	orm		#DMAC2, IFR		; clear any pending timer interrupts
+	orm		#DMAC2, IMR		; enable DMA2 interrupts
+	rsbx	INTM			; enable global interrupts
+
 	ret
 
-	.newblock                       ; allow re-use of $ variables
+	.newblock               ; allow re-use of $ variables
 
 ; end of sendPacket
 ;-----------------------------------------------------------------------------
@@ -5625,16 +5759,16 @@ $2:	add     #2, B                   ; increment the flag by 2 (each DSP gets eve
 	ld		numCoeffs, A
 	cc		processSamplesWithFilter, ANEQ
 
-	call    disableSerialTransmitter    ; call this often
+;debug mks -- remove this	call    disableSerialTransmitter    ; call this often
 
 	bitf    flags1, #GATES_ENABLED      ; process gates if they are enabled
 	cc      processGates, TC            ; also processes the DAC
 
-	call    disableSerialTransmitter    ; call this often
+;debug mks -- remove this	call    disableSerialTransmitter    ; call this often
 
 	call    processAScan                ; store an AScan dataset if enabled
 
-	call    disableSerialTransmitter    ; call this often
+;debug mks -- remove this	call    disableSerialTransmitter    ; call this often
 
 	ret
 
@@ -5864,13 +5998,49 @@ $6:	nop								; end of repeat block
 ; If the DMA has finished transmitting, disable the transmitter so that
 ; another core can send data on the shared McBSP1 serial port.
 ;
-; NOTE: This function MUST be called as often as possible to release the
-;  transmitter for another core as quickly as possible.
+; Details:
+;
+; All four cores share the same transmitter. When one has control, the others
+; cannot transmit. There is no simple method for the cores to communicate with
+; each other to facilitate handoff, so each must release the transmitter after
+; it has completed sending. Waiting in a loop takes too much time and calling
+; this function periodically does not work when the signal processing loop is
+; time intensive such as when applying filtering.
+;
+; The transmitter cannot be released immediately after the DMA finishes as
+; the last byte is still being transmitted. Likewise, waiting until the transmit
+; buffer is empty has the same issue. Looping until the last byte cleared is
+; a time waste.
+;
+; The solution used is to catch the DMA frame finished interrupt which then
+; enables a Timer interrupt to call this function a bit later when the
+; transmission should be complete. After releasing the transmitter, the Timer
+; interrupt is disabled. Since the Timer interrupt is only active for a single
+; call after each transmission, it does not add undue processing overhead.
+;
+; This should be a one-shot task...when the frame finished interrupt is
+; triggered the transmitter is disabled after the first Timer interrupt delay.
+; That delay must be long enough to guarantee that the last byte has been
+; shifted out. Although the XEMPTY flag could be checked and the timer
+; interrupt left in place for a second try, that is a waste of time. 
+; 
+; The Timer value may be used by other code for other purposes. It should be
+; noted that it will be modified to trigger after the desired delay when used
+; to disable the transmitter, so other uses should be designed to allow for
+; occasional glitches.
 ;
 
 disableSerialTransmitter:
 
-	ld      #Variables1, DP             ; point to Variables1 page
+	stm     #00h, SPSD1                 ; SPCR2 bit 0 = 0 -> place xmitter in reset
+										; to release it
+	ld      #Variables1, DP
+	andm    #~TRANSMITTER_ACTIVE, processingFlags1	; clear the transmitter active flag
+
+	ret
+
+;debug mks -- remove the remainder of this function
+
 
 	bitf    processingFlags1, #TRANSMITTER_ACTIVE	; check if transmitter is active
 	rc      NTC                         			; do nothing if inactive
@@ -5889,7 +6059,8 @@ disableSerialTransmitter:
 	ld      #00, DP                     ; must set DP to use bitf
 	bitf    SPSD1, #04h                 ; check XEMPTY (bit 2) to see if all data sent
 	ld      #Variables1, DP             ; point to Variables1 page before return
-	rc      TC                          ; if bit=1, not empty so loop
+	rc      TC                          ; if bit=1, not empty so leave xmtr active
+										; so this function will be called again
 
 	stm     #00h, SPSD1                 ; SPCR2 bit 0 = 0 -> place xmitter in reset
 
@@ -6100,14 +6271,14 @@ $1:
 	ld      *AR3, A                 ; get the flag set by the FPGA
 	cc		processSamples, ANEQ    ; process the new sample set if flag non-zero
 
-$2:	call    disableSerialTransmitter    ; call this often
+;debug mks -- remove this $2:	call    disableSerialTransmitter    ; call this often
 
-	call    readSerialPort          ; read data from the serial port
+$2:	call    readSerialPort          ; read data from the serial port
 
 ; check to see if a packet is being sent and disable the serial port transmitter
 ; when done so that another core can send data on the shared McBSP1
 
-	call    disableSerialTransmitter    ; call this often
+;debug mks -- remove this	call    disableSerialTransmitter    ; call this often
 
 	b   $1
 

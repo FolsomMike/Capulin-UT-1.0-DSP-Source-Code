@@ -24,8 +24,16 @@
 
 ; Miscellaneous Registers
 
+TSCR		.equ	27h
 CSIDR		.equ	3eh
 
+
+; Miscellaneous Bits
+
+TINT		.equ	08h	
+TRB			.equ	20h
+TSS			.equ	10h
+DMAC2		.equ	0400h
 
 ; McBSP Control Registers
 ; From table 3-24 of TMS320VC5441 Data Manual SPRS122F
