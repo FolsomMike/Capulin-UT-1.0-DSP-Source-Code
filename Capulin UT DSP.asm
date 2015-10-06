@@ -737,26 +737,28 @@ DSP_ACKNOWLEDGE					.equ	127
 	; the following order:
 	;
 	; debugStatusFlags
-	; AG_Register
-	; AH_Register
-	; AL_Register
-	; BG_Register
-	; BH_Register
-	; BL_Register
+	; AG Register
+	; AH Register
+	; AL Register
+	; BG Register
+	; BH Register
+	; BL Register
 	;
-	; ST0_Register
-	; ST1_Register
+	; ST0 Register
+	; ST1 Register
 	;
-	; PMST_Register
+	; PMST Register
+	; BRC Register
+	; SP Register
 	;
-	; AR0_Register
-	; AR1_Register
-	; AR2_Register
-	; AR3_Register
-	; AR4_Register
-	; AR5_Register
-	; AR6_Register
-	; AR7_Register
+	; AR0 Register
+	; AR1 Register
+	; AR2 Register
+	; AR3 Register
+	; AR4 Register
+	; AR5 Register
+	; AR6 Register
+	; AR7 Register
 	;
 
 	.bss	debuggerVariables, DEBUGGER_VARIABLES_BUFFER_SIZE
@@ -820,8 +822,15 @@ coeffs1	.word	55h,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0a
 
 handleTimerInterrupt:
 
+;debug mks
+	ld		#01h,A
+	stm		#4, AR7
+	call	storeRegistersAndHalt	;debug mks
+;debug mks end
+
+	ld		#00h, DP
+
 	andm	#~TINT, IMR		; disable timer interrupts
-	andm	#~DMAC2, IMR	; disable DMA2 interrupts
 
 	call	disableSerialTransmitter
 
@@ -844,7 +853,15 @@ handleTimerInterrupt:
 
 handleDMA2Interrupt:
 
+;debug mks
+	ldm		IMR, A
+	stm		#2, AR7
+	call	storeRegistersAndHalt	;debug mks
+;debug mks end
+
 	ld		#00h, DP
+
+	andm	#~DMAC2, IMR	; disable DMA2 interrupts
 
 	orm		#TSS, TCR		; stop timer
 	stm		#40000, PRD		; delay this many counts (10 nS each)
@@ -853,6 +870,12 @@ handleDMA2Interrupt:
 
 	orm		#TINT, IFR		; clear any pending timer interrupts
 	orm		#TINT, IMR		; enable timer interrupts
+
+;debug mks
+	ldm		TIM, A
+	stm		#3, AR7
+	call	storeRegistersAndHalt	;debug mks
+;debug mks end
 
 	rete
 
@@ -895,6 +918,8 @@ setupTimer:
 	;0000~~~~~~~~~~~~ reserved
 	;~~~~0~~~~~~~~~~~ (PREMD) 0 = TDDR is prescale value, 1 = TDDR selects from list of values
 	;~~~~~00000000000 reserved
+
+	ret
 
 	.newblock						; allow re-use of $ variables
 
@@ -964,6 +989,8 @@ setupDMA:
 	; "TMS320VC5441 Fixed-Point Digital Signal Processor Data Manual".
 
 	ret
+
+	.newblock
 
 ; end of setupDMA
 ;-----------------------------------------------------------------------------
@@ -1797,8 +1824,8 @@ sendPacket:
 ; for ways to avoid the issue.
 
 	ld      #00, DP			; point to Memory Mapped Registers
+
 	orm     #04, DMPREC		; use orm to set only the desired bit
-	ld      #Variables1, DP
 
 ; since the DMA was disabled when the serial port was enabled, the DMA misses
 ; the trigger to load data - force feed a first transmit byte to get things
@@ -1815,9 +1842,25 @@ sendPacket:
 
 ; setup interrupt on frame sent to force release of transmitter when done
 
-	orm		#DMAC2, IFR		; clear any pending timer interrupts
+;debug mks
+	ldm		IFR, A
+	ldm		IMR, B
+	stm		#11h, AR7
+	call	storeRegistersAndHalt	;debug mks
+;debug mks end
+
+	orm		#DMAC2, IFR		; clear any pending DMA interrupts
 	orm		#DMAC2, IMR		; enable DMA2 interrupts
 	rsbx	INTM			; enable global interrupts
+
+;debug mks
+	popm	AL
+	pshm	AL
+	stm		#1, AR7
+	call	storeRegistersAndHalt	;debug mks
+;debug mks end
+
+	ld      #Variables1, DP
 
 	ret
 
@@ -3214,12 +3257,12 @@ processAScan:
 	andm    #~CREATE_ASCAN, processingFlags1  ; clear the flag
 
 	bitf    flags1, #ASCAN_FAST_ENABLED ; process AScan fast if enabled
-	cc      processAScanFast, TC        ; (this will cause framesets to be skipped
+	bc      processAScanFast, TC        ; (this will cause framesets to be skipped
 										;  due to the extensive processing required)
 										; ONLY use fast or slow version
 
 	bitf    flags1, #ASCAN_SLOW_ENABLED ; process AScan slow if enabled
-	cc      processAScanSlow, TC        ; (this is safe to use during inspection)
+	bc      processAScanSlow, TC        ; (this is safe to use during inspection)
 										; ONLY use fast or slow version
 
 ; end of processAScan
@@ -5987,6 +6030,8 @@ $5:	stl     B, *AR1+                ; zero the rest of the entry
 
 $6:	nop								; end of repeat block
 
+	ret
+
 	.newblock                       ; allow re-use of $ variables
 
 ; end of setupGatesDACs
@@ -6032,10 +6077,23 @@ $6:	nop								; end of repeat block
 
 disableSerialTransmitter:
 
+;debug mks
+	popm	AL
+	pshm	AL
+	stm		#5, AR7
+	call	storeRegistersAndHalt	;debug mks
+;debug mks end
+
 	stm     #00h, SPSD1                 ; SPCR2 bit 0 = 0 -> place xmitter in reset
 										; to release it
 	ld      #Variables1, DP
 	andm    #~TRANSMITTER_ACTIVE, processingFlags1	; clear the transmitter active flag
+
+;debug mks
+	ld		#01h,A
+	stm		#6, AR7
+	call	storeRegistersAndHalt	;debug mks
+;debug mks end
 
 	ret
 
@@ -6068,6 +6126,8 @@ disableSerialTransmitter:
 
 	ret
 
+	.newblock							; allow re-use of $ variables
+
 ; end of disableSerialTransmitter
 ;-----------------------------------------------------------------------------
 
@@ -6090,6 +6150,8 @@ resetMapping:
 
 	ret
 
+	.newblock							; allow re-use of $ variables
+
 ; end of resetMapping
 ;-----------------------------------------------------------------------------
 
@@ -6101,23 +6163,23 @@ resetMapping:
 
 main:
 
-; The input clock frequency from the FPGA is 8.33 Mhz (120 ns period).
-; The PLL must be initialized to multiply this by 12 to obtain an operating
-; frequency of 100 Mhz (10 ns period).
+	.if     debugger                ; perform setup for debugger functions
+	call    initDebugger
+	.endif
 
-; 1011011111111111b (b7ffh)
-;
-; bits  15-12   = 1011          : Multiplier = 12 (value + 1) (PLLMUL)
-; bit	11      = 0             : Integer Multiply Factor (PLLDIV)
-; bits 	10-3    = 11111111      : PLL Startup Delay (PLLCOUNT)
-; bit 	2       = 1             : PLL On   (PLLON/OFF)
-; bit 	1       = 1             : PLL Mode (PLLNDIV)
-; bit 	0       = 1             : PLL Mode (STATUS)
-;
+	stm		#00h, IMR			; disable all interrupts -- this register is not cleared on reset
 
 	ld      #Variables1,DP
 
-	stm     endOfStack, SP          ; setup the stack pointer
+	stm     #endOfStack, SP		; setup the stack pointer
+
+;debug mks
+	ldm		IFR, A
+	ldm		IMR, B
+	stm		#99h, AR7
+	call	storeRegistersAndHalt	;debug mks
+;debug mks end
+
 
 	;note mks - for simulation, block out the next line after running the
 	;		     code once -- the first time is useful to clear the variables
@@ -6163,6 +6225,20 @@ main:
 										; don't have to be set because only processing
 										; a single point won't cause any problems.
 
+; The input clock frequency from the FPGA is 8.33 Mhz (120 ns period).
+; The PLL must be initialized to multiply this by 12 to obtain an operating
+; frequency of 100 Mhz (10 ns period).
+;
+; 1011011111111111b (b7ffh)
+;
+; bits  15-12   = 1011          : Multiplier = 12 (value + 1) (PLLMUL)
+; bit	11      = 0             : Integer Multiply Factor (PLLDIV)
+; bits 	10-3    = 11111111      : PLL Startup Delay (PLLCOUNT)
+; bit 	2       = 1             : PLL On   (PLLON/OFF)
+; bit 	1       = 1             : PLL Mode (PLLNDIV)
+; bit 	0       = 1             : PLL Mode (STATUS)
+;
+
 	stm     #00h, CLKMD					; must turn off PLL before changing values
 										; (not explained very well in manual)
 	nop									; give time for system to exit PLL mode
@@ -6196,6 +6272,11 @@ main:
 
 	call    setupDMA					; prepare DMA channel(s) for use
 
+	; clear stack for easier debugging
+	stm    	#stack, AR1
+	rptz    A, #99
+	stl     A, *AR1+
+
 	; clear data buffers used for averaging
 	ld      #8000h, A
 	stlm    A, AR1
@@ -6216,12 +6297,6 @@ main:
 	ldm		AR0, A
 	stl     A, *AR1+
 $1:	mar		*AR0+
-
-	;debug mks
-
-	.if     debugger                ; perform setup for debugger functions
-	call    initDebugger
-	.endif
 
 	b       mainLoop					; start main execution loop
 
