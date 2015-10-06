@@ -62,9 +62,6 @@
 	.global	setFlags1
 	.global	getPeakData
 
-OFFSET_TO_AR0 .equ	12		; NOTE: modify this if variables added/removed
-							; before the location in which AR0 is stored
-
 	.text
 
 	.if 	debug
@@ -157,58 +154,54 @@ initDebugger:
 
 storeRegistersAndHalt:
 
-	; NOTE: Adjust OFFSET_TO_AR0 constant if variables added before the storing of AR0
-	;	as that value is the offset from the beginning to the AR0 location
-
 	pshm	ST0							; save registers modified during store process
-	pshm	AR1
-	pshm	AR0							; AR0 must be last pushed as it is pop/pushed for storing
+	pshm	AR0
+	pshm	AR1							; AR0 must be last pushed as it is pop/pushed for storing
 
-	stm     #debuggerVariables, AR0     ; start of Register buffer
+	stm     #debuggerVariables, AR1     ; start of Register buffer
 
-	mar		*AR0+						; skip debug status flags
-	mvkd	AG, *AR0+
-	mvkd	AH, *AR0+
-	mvkd	AL, *AR0+
-	mvkd	BG, *AR0+
-	mvkd	BH, *AR0+
-	mvkd	BL, *AR0+
-	mvkd	T, *AR0+
+	mar		*AR1+						; skip debug status flags
+	mvkd	AG, *AR1+
+	mvkd	AH, *AR1+
+	mvkd	AL, *AR1+
+	mvkd	BG, *AR1+
+	mvkd	BH, *AR1+
+	mvkd	BL, *AR1+
+	mvkd	T, *AR1+
 
-	mvkd	ST0, *AR0+
-	mvkd	ST1, *AR0+
+	mvkd	ST0, *AR1+
+	mvkd	ST1, *AR1+
 
-	mvkd	PMST, *AR0+
-	mvkd	BRC, *AR0+
-									; NOTE: Adjust OFFSET_TO_AR0 if registers added above this point!
-	mvkd	AR0, *AR0+				; dummy save as AR0 has been changed during use as a pointer
-	mvkd	AR1, *AR0+
-	mvkd	AR2, *AR0+
-	mvkd	AR3, *AR0+
-	mvkd	AR4, *AR0+
-	mvkd	AR5, *AR0+
-	mvkd	AR6, *AR0+
-	mvkd	AR7, *AR0+
+	mvkd	PMST, *AR1+
+	mvkd	BRC, *AR1+
 
-	popm	AR1							; retrieve the stored AR0 into AR1 so it can be properly saved
-	pshm	AR1							; save it again for final restore back to AR0
+	pshm	AR0
+	mvmm 	SP, AR0
+	mar     *+AR0(+4)				; add 4 to Stack Pointer displayed to get value when function was entered
+	mvkd	AR0, *AR1+				; this accounts for the effect of registers pushed by this debug function
+	popm	AR0
 
-	stm     #debuggerVariables, AR0     ; back to start as this is a known basepoint
-	mar		*+AR0(OFFSET_TO_AR0)		; point to AR0 storage variable
-										; use mar to move AR0 as *+ARx(x) can't be used with mvkd to save to memory 			
-										; mapped registers
+	mvkd	AR0, *AR1+
 
-	mvkd	AR1, *AR0+					; store the original AR0 value (currently in AR1)
+	popm	AR0						; retrieve the stored AR1 into AR0 so AR1 can be saved
+	pshm	AR0						; put copy back on stack for retrieval on exit
+	mvkd	AR0, *AR1+
 
+	mvkd	AR2, *AR1+
+	mvkd	AR3, *AR1+
+	mvkd	AR4, *AR1+
+	mvkd	AR5, *AR1+
+	mvkd	AR6, *AR1+
+	mvkd	AR7, *AR1+
 
-	stm     #debuggerVariables, AR0
-	orm		#01h, *AR0					; set the debug halt flag
+	stm     #debuggerVariables, AR1
+	orm		#01h, *AR1					; set the debug halt flag
 debuggerHalt:							; loop while flag is set
-	bitf	*AR0, #01h
+	bitf	*AR1, #01h
 	bc	debuggerHalt, TC
 
-	popm	AR0
 	popm	AR1
+	popm	AR0
 	popm	ST0
 
 	ret
