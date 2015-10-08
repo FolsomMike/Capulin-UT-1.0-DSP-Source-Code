@@ -835,12 +835,6 @@ handleTimerInterrupt:
 
 	call	disableSerialTransmitter
 
-;debug mks
-;	ld		#01h,A
-;	stm		#4, AR7
-;	intr	2					; breakpoint halt -- use caution in interrupt routines!
-;debug mks end
-
 	popm	ST1
 	popm	ST0
 
@@ -877,12 +871,6 @@ handleDMA2Interrupt:
 
 	stm		#TINT, IFR		; clear pending timer interrupts (do not use ORM which will clear all)
 	orm		#TINT, IMR		; enable timer interrupts
-
-;debug mks
-;	ldm		TIM, A
-;	stm		#2, AR7
-;	intr	2					; breakpoint halt -- use caution in interrupt routines!;debug mks end
-;debug mks
 
 	popm	ST1
 	popm	ST0
@@ -1856,13 +1844,6 @@ sendPacket:
 
 	ld      #0ffh, A
 	stlm    A, DXR11
-
-;debug mks
-;	ldm		IFR, A
-;	ldm		IMR, B
-;	stm		#1, AR7
-;	intr	2					; breakpoint halt
-;debug mks end
 
 	ret
 
@@ -6079,23 +6060,10 @@ $6:	nop								; end of repeat block
 
 disableSerialTransmitter:
 
-;debug mks
-;	popm	AL
-;	pshm	AL
-;	stm		#5, AR7
-;	intr	2					; breakpoint halt
-;debug mks end
-
 	stm     #00h, SPSD1                 ; SPCR2 bit 0 = 0 -> place xmitter in reset
 										; to release it
 	ld      #Variables1, DP
 	andm    #~TRANSMITTER_ACTIVE, processingFlags1	; clear the transmitter active flag
-
-;debug mks
-;	ld		#01h,A
-;	stm		#6, AR7
-;	intr	2					; breakpoint halt
-;debug mks end
 
 	ret
 
@@ -6177,14 +6145,6 @@ main:
 	ld      #Variables1,DP
 
 	stm     #endOfStack, SP		; setup the stack pointer
-
-;debug mks
-;	ldm		IFR, A
-;	ldm		IMR, B
-;	stm		#100h, AR7
-;	intr	2					; breakpoint halt
-;debug mks end
-
 
 	;note mks - for simulation, block out the next line after running the
 	;		     code once -- the first time is useful to clear the variables
