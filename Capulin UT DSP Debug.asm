@@ -151,6 +151,20 @@ initDebugger:
 ; Stores all registers in buffer debuggerVariables so they can be retrieved
 ; for display by the debugger. 
 ;
+;
+; If executing "intr 2" inside an interrupt routine, it should only be done just
+; before the rete instruction. The "intr 2" call will re-enable global interrupts.
+; Even trying to disable them immediately after the call won't work -- a pending
+; interrupt will be caught between the "intr 2" and the next instruction setting
+; the INTM flag. If the call is made earlier in the routing, the global interrupts
+; being enabled will allow other interrupts to be processed (including a recursive
+; call back the the current routine) which can cause problems in some code.
+;
+; A second version of this function which did not use rete could be called from
+; interrupt routines using trap instead of intr. The trap opcode does not affect
+; the intm flag. This would require both routines to always be updated together,
+; which is a pain.
+;
 
 storeRegistersAndHalt:
 
@@ -204,7 +218,7 @@ debuggerHalt:							; loop while flag is set
 	popm	AR0
 	popm	ST0
 
-	ret
+	rete
 
 ; end of storeRegistersAndHalt
 ;-----------------------------------------------------------------------------

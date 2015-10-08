@@ -339,6 +339,10 @@ DSP_ACKNOWLEDGE					.equ	127
 
 	b		main					; reset vector
 
+	.sect	"DebugHalt"				; link this at 0xff88
+
+	b		storeRegistersAndHalt	; use as a debug breakpoint
+
 	.sect	"TimerInterrupt"		; link this a 0xffcc
 
 	b		handleTimerInterrupt	; Timer rollover interrupt
@@ -822,17 +826,23 @@ coeffs1	.word	55h,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0a
 
 handleTimerInterrupt:
 
-;debug mks
-	ld		#01h,A
-	stm		#4, AR7
-	call	storeRegistersAndHalt	;debug mks
-;debug mks end
+	pshm	ST0
+	pshm	ST1
 
 	ld		#00h, DP
 
 	andm	#~TINT, IMR		; disable timer interrupts
 
 	call	disableSerialTransmitter
+
+;debug mks
+;	ld		#01h,A
+;	stm		#4, AR7
+;	intr	2					; breakpoint halt -- use caution in interrupt routines!
+;debug mks end
+
+	popm	ST1
+	popm	ST0
 
 	rete
 
@@ -853,29 +863,29 @@ handleTimerInterrupt:
 
 handleDMA2Interrupt:
 
-;debug mks
-	ldm		IMR, A
-	stm		#2, AR7
-	call	storeRegistersAndHalt	;debug mks
-;debug mks end
+	pshm	ST0
+	pshm	ST1
 
 	ld		#00h, DP
 
 	andm	#~DMAC2, IMR	; disable DMA2 interrupts
 
 	orm		#TSS, TCR		; stop timer
-	stm		#40000, PRD		; delay this many counts (10 nS each)
+	stm		#60000, PRD		; delay this many counts (10 nS each)
 	andm	#~TSS, TCR		; start timer
 	orm		#TRB, TCR		; reset timer to force reload of all values
 
-	orm		#TINT, IFR		; clear any pending timer interrupts
+	stm		#TINT, IFR		; clear pending timer interrupts (do not use ORM which will clear all)
 	orm		#TINT, IMR		; enable timer interrupts
 
 ;debug mks
-	ldm		TIM, A
-	stm		#3, AR7
-	call	storeRegistersAndHalt	;debug mks
-;debug mks end
+;	ldm		TIM, A
+;	stm		#2, AR7
+;	intr	2					; breakpoint halt -- use caution in interrupt routines!;debug mks end
+;debug mks
+
+	popm	ST1
+	popm	ST0
 
 	rete
 
@@ -900,7 +910,7 @@ setupTimer:
 
 	; setup with prescaler of 1 ~ TIM register will be decremented every 10nS
 
-	stm #0000000000000001b, TCR
+	stm #0000000000000011b, TCR
 
 	;0000~~~~~~~~~~~~ reserved
 	;~~~~0~~~~~~~~~~~ (SOFT) debugger control 
@@ -908,7 +918,7 @@ setupTimer:
 	;~~~~~~0000~~~~~~ (PSC) prescalar counter, only when PREMD = 0 (in TSCR) putting prescaler to direct mode
 	;~~~~~~~~~~0~~~~~ (TRB) 1 = Auto timer reload
 	;~~~~~~~~~~~0~~~~ (TSS) 0 = timer running, 1 = timer stopped
-	;~~~~~~~~~~~~0001 (TDDR) When PREMD = 0, TDDR is a 4-bit reload prescalar
+	;~~~~~~~~~~~~0011 (TDDR) When PREMD = 0, TDDR is a 4-bit reload prescalar
     ; 						 When PREMD = 1, value in TDDR selects from a list of prescalar values
 
 	; setup prescaler for direct operation ~ TDDR is the prescale countdown value
@@ -1109,11 +1119,11 @@ setupDMA2:
 	;~~~~~~~~00000000 (Frame Count) 1 frame per block (desired count - 1)
 
 	stm		DMMCR2, DMSA
-	stm		#0100000101000001b, DMSDN
+	stm		#0110000101000001b, DMSDN
 
 	;0~~~~~~~~~~~~~~~ (AUTOINIT) 0 = Autoinitialization disabled - *see note below
 	;~1~~~~~~~~~~~~~~ (DINM) 1 = DMA Interrupts generated based on IMOD bit
-	;~~0~~~~~~~~~~~~~ (IMOD) 0 = Interrupt at frame complete
+	;~~1~~~~~~~~~~~~~ (IMOD) 1 = Interrupt at frame & block complete
 	;~~~0~~~~~~~~~~~~ (CTMOD) 0 = Multiframe mode
 	;~~~~0~~~~~~~~~~~ Reserved
 	;~~~~~001~~~~~~~~ (SIND) post increment source address after each transfer
@@ -1581,20 +1591,9 @@ $1:	ldu     *AR3+%, A               ; reload core ID from packet
 	ldm     AR3, A                  ; save the buffer pointer which now points
 	stl     A, serialPortInBufPtr   ; to next packet
 
-
-; process the packet
-
-	;enable the serial port transmitter
-	;need to do other tasks for at least 15 internal cpu clock cycles
-	;(10 ns each) to delay at least two serial port clock cycles (60 ns each)
-
-	stm     #SPCR2, SPSA1           ; point subaddressing register
-	stm     #01h, SPSD1             ; store value in the desired register
-									; this enables the transmitter
-
-	orm     #TRANSMITTER_ACTIVE, processingFlags1	; set transmitter active flag
-
 	mar	*+AR3(-12)%					; point back to packet ID
+
+	; process the packet
 
 	; NOTE: the various functions are invoked with a branch rather
 	; 	than a call so that they do not return to this function
@@ -1778,6 +1777,19 @@ sendPacket:
 
 	ld      #Variables1, DP
 
+	;enable the serial port transmitter
+	;need to do other tasks for at least 15 internal cpu clock cycles
+	;(10 ns each) to at least two serial port clock cycles (60 ns each)
+
+	stm     #SPCR2, SPSA1           ; point subaddressing register
+	stm     #01h, SPSD1             ; store value in the desired register
+									; this enables the transmitter
+
+	call	responseDelay 	;debug mks
+
+
+	orm     #TRANSMITTER_ACTIVE, processingFlags1	; set transmitter active flag
+
 	stm     #SERIAL_PORT_XMT_BUFFER, AR3    ; point to start of out buffer
 
 	stm     DMSRC2, DMSA            ;set source address to buffer
@@ -1791,8 +1803,8 @@ sendPacket:
 									;  actual number of bytes to be sent as
 									;  required by the DMA)
 
-; a ffh value has already been sent to trigger the DMA transfer
-; this must be followed by 00h, 99h to force the FPGA to begin storing the data
+; a ffh value will be sent first to trigger the DMA transfer, this must be
+; followed by 00h, 99h in the buffer to force the FPGA to begin storing the data
 
 	st      #00h, *AR3+             ; trigger to FPGA to start storing
 	st      #099h, *AR3+            ; trigger to FPGA to start storing
@@ -1827,6 +1839,11 @@ sendPacket:
 
 	orm     #04, DMPREC		; use orm to set only the desired bit
 
+; enable interrupt-on-frame-sent to handle release of transmitter when done
+
+	stm		#DMAC2, IFR		; clear pending DMA interrupts (do not use ORM which will clear all)
+	orm		#DMAC2, IMR		; enable DMA2 interrupts
+
 ; since the DMA was disabled when the serial port was enabled, the DMA misses
 ; the trigger to load data - force feed a first transmit byte to get things
 ; started
@@ -1840,27 +1857,12 @@ sendPacket:
 	ld      #0ffh, A
 	stlm    A, DXR11
 
-; setup interrupt on frame sent to force release of transmitter when done
-
 ;debug mks
-	ldm		IFR, A
-	ldm		IMR, B
-	stm		#11h, AR7
-	call	storeRegistersAndHalt	;debug mks
+;	ldm		IFR, A
+;	ldm		IMR, B
+;	stm		#1, AR7
+;	intr	2					; breakpoint halt
 ;debug mks end
-
-	orm		#DMAC2, IFR		; clear any pending DMA interrupts
-	orm		#DMAC2, IMR		; enable DMA2 interrupts
-	rsbx	INTM			; enable global interrupts
-
-;debug mks
-	popm	AL
-	pshm	AL
-	stm		#1, AR7
-	call	storeRegistersAndHalt	;debug mks
-;debug mks end
-
-	ld      #Variables1, DP
 
 	ret
 
@@ -6078,10 +6080,10 @@ $6:	nop								; end of repeat block
 disableSerialTransmitter:
 
 ;debug mks
-	popm	AL
-	pshm	AL
-	stm		#5, AR7
-	call	storeRegistersAndHalt	;debug mks
+;	popm	AL
+;	pshm	AL
+;	stm		#5, AR7
+;	intr	2					; breakpoint halt
 ;debug mks end
 
 	stm     #00h, SPSD1                 ; SPCR2 bit 0 = 0 -> place xmitter in reset
@@ -6090,9 +6092,9 @@ disableSerialTransmitter:
 	andm    #~TRANSMITTER_ACTIVE, processingFlags1	; clear the transmitter active flag
 
 ;debug mks
-	ld		#01h,A
-	stm		#6, AR7
-	call	storeRegistersAndHalt	;debug mks
+;	ld		#01h,A
+;	stm		#6, AR7
+;	intr	2					; breakpoint halt
 ;debug mks end
 
 	ret
@@ -6168,16 +6170,19 @@ main:
 	.endif
 
 	stm		#00h, IMR			; disable all interrupts -- this register is not cleared on reset
+	stm		#0ffh, IFR			; clear any pending interrupts
+
+	rsbx	INTM				; enable global interrupts
 
 	ld      #Variables1,DP
 
 	stm     #endOfStack, SP		; setup the stack pointer
 
 ;debug mks
-	ldm		IFR, A
-	ldm		IMR, B
-	stm		#99h, AR7
-	call	storeRegistersAndHalt	;debug mks
+;	ldm		IFR, A
+;	ldm		IMR, B
+;	stm		#100h, AR7
+;	intr	2					; breakpoint halt
 ;debug mks end
 
 
@@ -6348,7 +6353,16 @@ $1:
 
 ;debug mks -- remove this $2:	call    disableSerialTransmitter    ; call this often
 
-$2:	call    readSerialPort          ; read data from the serial port
+$2:
+	ld      #Variables1, DP         				; point to Variables1 page
+	bitf    processingFlags1, #TRANSMITTER_ACTIVE	; check if transmitter is active
+	
+	call		readSerialPort	;debug mks
+
+	;cc		readSerialPort, NTC      				; read data from the serial port if not
+													; don't call if transmitter still
+													; active from previous call as
+													; this function sends packets
 
 ; check to see if a packet is being sent and disable the serial port transmitter
 ; when done so that another core can send data on the shared McBSP1
