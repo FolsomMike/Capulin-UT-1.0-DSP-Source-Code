@@ -5656,16 +5656,10 @@ $2:	add     #2, B                   ; increment the flag by 2 (each DSP gets eve
 	ld		numCoeffs, A
 	cc		processSamplesWithFilter, ANEQ
 
-;debug mks -- remove this	call    disableSerialTransmitter    ; call this often
-
 	bitf    flags1, #GATES_ENABLED      ; process gates if they are enabled
 	cc      processGates, TC            ; also processes the DAC
 
-;debug mks -- remove this	call    disableSerialTransmitter    ; call this often
-
 	call    processAScan                ; store an AScan dataset if enabled
-
-;debug mks -- remove this	call    disableSerialTransmitter    ; call this often
 
 	ret
 
@@ -5938,35 +5932,6 @@ disableSerialTransmitter:
 
 	ret
 
-;debug mks -- remove the remainder of this function
-
-
-	bitf    processingFlags1, #TRANSMITTER_ACTIVE	; check if transmitter is active
-	rc      NTC                         			; do nothing if inactive
-
-	ld      #00, DP                     ; must set DP to use bitf
-	bitf    DMPREC, #04h                ; DMA still enabled, not finished, do nothing
-	ld      #Variables1, DP             ; point to Variables1 page before return
-	rc      TC                          ; AutoInit is disabled, so DMA clears this
-										; enable bit at the end of the block transfer
-
-	; wait until XEMPTY goes low for shift register empty - even when the
-	; element count reaches zero for the DMA, the transmitter may still
-	; be sending the last value
-
-	stm     #SPCR2, SPSA1               ; point subaddressing register
-	ld      #00, DP                     ; must set DP to use bitf
-	bitf    SPSD1, #04h                 ; check XEMPTY (bit 2) to see if all data sent
-	ld      #Variables1, DP             ; point to Variables1 page before return
-	rc      TC                          ; if bit=1, not empty so leave xmtr active
-										; so this function will be called again
-
-	stm     #00h, SPSD1                 ; SPCR2 bit 0 = 0 -> place xmitter in reset
-
-	andm    #~TRANSMITTER_ACTIVE, processingFlags1	; clear the transmitter active flag
-
-	ret
-
 	.newblock							; allow re-use of $ variables
 
 ; end of disableSerialTransmitter
@@ -6124,16 +6089,6 @@ main:
 	rptz    A, #MAX_NUM_COEFFS		; this will clear one more than MAX_NUM_COEFFS -- the buffer has an extra location
 	stl     A, *AR1+
 
-	;debug mks -- fill FIR filter buffer with incrementing value
-
-	stm		#0, AR0
-	stm    	#firBuffer, AR1
-	stm		#MAX_NUM_COEFFS, BRC	; this will clear one more than MAX_NUM_COEFFS -- the buffer has an extra location
-	rptb    $1
-	ldm		AR0, A
-	stl     A, *AR1+
-$1:	mar		*AR0+
-
 	b       mainLoop					; start main execution loop
 
 	.newblock							; allow re-use of $ variables
@@ -6182,8 +6137,6 @@ $1:
 	ld      *AR3, A                 ; get the flag set by the FPGA
 	cc		processSamples, ANEQ    ; process the new sample set if flag non-zero
 
-;debug mks -- remove this $2:	call    disableSerialTransmitter    ; call this often
-
 $2:
 	ld      #Variables1, DP         				; point to Variables1 page
 	bitf    processingFlags1, #TRANSMITTER_ACTIVE	; check if transmitter is active
@@ -6194,8 +6147,6 @@ $2:
 
 ; check to see if a packet is being sent and disable the serial port transmitter
 ; when done so that another core can send data on the shared McBSP1
-
-;debug mks -- remove this	call    disableSerialTransmitter    ; call this often
 
 	b   $1
 
