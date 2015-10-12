@@ -1338,7 +1338,7 @@ setupSerialPort:
 ; bit	15	  = 0		: RW - Single phase rcv frame
 ; bits	14-8  = 0000000	: RW - Rcv frame 2 length = 1 word (not used for single phase)
 ; bits	7-5	  = 000		: RW - Rcv word length 2 = 8 bits (not used for single phase)
-; bits	4-3	  = 00		: RW - No companding, data tranfers MSB first
+; bits	4-3	  = 00		: RW - No companding, data transfers MSB first
 ; bit	2	  = 0		: RW - Rcv frame sync pulses after the first restart transfer
 ; bits	1-0	  = 00		: RW - First bit transmitted zero clocks after frame sync
 
@@ -1748,6 +1748,16 @@ $2:
 ; The length of the data is not sent back in the packet as the message ID
 ; will indicate this value.
 ;
+; Note 1
+;
+; After starting the serial port, must wait at least 15 internal cpu clock cycles
+; (10 ns each) to delay at least two serial port clock cycles (60 ns each).
+; It has been verified that the delay must be between the "stm #01h, SPSD1"
+; and the "stlm A, DXR11" instructions, verifying that the delay is solving
+; that problem and not required to ensure that another core has released the
+; transmitter.
+; CORRECTION: for some reason, a much greater delay is required -- why?
+;
 ; This function will add header information, using packet format of:
 ;
 ; byte 0 : 00h
@@ -1765,10 +1775,7 @@ sendPacket:
 
 	ld      #Variables1, DP
 
-	;enable the serial port transmitter
-	;need to do other tasks for at least 15 internal cpu clock cycles
-	;(10 ns each) to at least two serial port clock cycles (60 ns each)
-	;(for some reason, a much greater delay is required -- why?)
+	;enable the serial port transmitter -- see Note 1 above for delay requirements
 
 	stm     #SPCR2, SPSA1           ; point subaddressing register
 	stm     #01h, SPSD1             ; store value in the desired register
@@ -1840,7 +1847,7 @@ sendPacket:
 ; the FPGA looks for a 0xff, 0x00, 0x99 sequence as a signal to begin storing
 ; packets - the leading 0xff is transmitted here while the remaining two bytes
 ; of the header are included at the beginning of the packet - sending the 0xff
-; here is necessary to start the DMA tranfer
+; here is necessary to start the DMA transfer
 ; The 0xff, 0x00, 0x99 header bytes will not be stored by the FPGA.
 
 	ld      #0ffh, A
