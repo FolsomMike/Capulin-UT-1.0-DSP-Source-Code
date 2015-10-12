@@ -865,7 +865,7 @@ handleDMA2Interrupt:
 	andm	#~DMAC2, IMR	; disable DMA2 interrupts
 
 	orm		#TSS, TCR		; stop timer
-	stm		#60000, PRD		; delay this many counts (10 nS each)
+	stm		#10, PRD		; delay this many counts (10 nS each)...value as low as 10 works
 	andm	#~TSS, TCR		; start timer
 	orm		#TRB, TCR		; reset timer to force reload of all values
 
@@ -898,7 +898,7 @@ setupTimer:
 
 	; setup with prescaler of 1 ~ TIM register will be decremented every 10nS
 
-	stm #0000000000000011b, TCR
+	stm #0000000000000001b, TCR
 
 	;0000~~~~~~~~~~~~ reserved
 	;~~~~0~~~~~~~~~~~ (SOFT) debugger control 
@@ -906,7 +906,7 @@ setupTimer:
 	;~~~~~~0000~~~~~~ (PSC) prescalar counter, only when PREMD = 0 (in TSCR) putting prescaler to direct mode
 	;~~~~~~~~~~0~~~~~ (TRB) 1 = Auto timer reload
 	;~~~~~~~~~~~0~~~~ (TSS) 0 = timer running, 1 = timer stopped
-	;~~~~~~~~~~~~0011 (TDDR) When PREMD = 0, TDDR is a 4-bit reload prescalar
+	;~~~~~~~~~~~~0001 (TDDR) When PREMD = 0, TDDR is a 4-bit reload prescalar
     ; 						 When PREMD = 1, value in TDDR selects from a list of prescalar values
 
 	; setup prescaler for direct operation ~ TDDR is the prescale countdown value
@@ -1768,13 +1768,14 @@ sendPacket:
 	;enable the serial port transmitter
 	;need to do other tasks for at least 15 internal cpu clock cycles
 	;(10 ns each) to at least two serial port clock cycles (60 ns each)
+	;(for some reason, a much greater delay is required -- why?)
 
 	stm     #SPCR2, SPSA1           ; point subaddressing register
 	stm     #01h, SPSD1             ; store value in the desired register
 									; this enables the transmitter
 
-	call	responseDelay 	;debug mks
-
+	rpt		#130					; 107 is minimum value that works; set a bit higher for safety
+	nop								; delay after starting serial port
 
 	orm     #TRANSMITTER_ACTIVE, processingFlags1	; set transmitter active flag
 
@@ -2123,13 +2124,8 @@ $1:
 ; is the low byte of the resync error count so the host can easily track
 ; the number of reSync errors that have occurred.
 ;
-; IMPORTANT: See responseDelay header notes for info regarding timing delays
-;	required to avoid collision between the DSP cores sharing the port.
-;
 
 sendACK:
-
-	call    responseDelay                   ; see notes in responseDelay for info
 
 	ld      #Variables1, DP
 
@@ -2175,8 +2171,6 @@ getStatus:
 
 	ld      #DSP_GET_STATUS_CMD, B          ; load message ID into B before calling
 
-	call    responseDelay                   ; see notes in responseDelay for info
-
 	b       sendPacket                      ; send the data in a packet via serial
 
 	.newblock                               ; allow re-use of $ variables
@@ -2214,8 +2208,6 @@ getMapBufferWordsAvailableCount:
 	ld      #2, A                           ; size of data in buffer
 
 	ld      #DSP_GET_MAP_COUNT_CMD, B       ; load message ID into B before calling
-
-	call    responseDelay                   ; see notes in responseDelay for info
 
 	b       sendPacket                      ; send the data in a packet via serial
 
@@ -2754,127 +2746,6 @@ $8:	nop								; end of repeat block
 	ret	
 
 ; end of copyByteBufferToProgramMemory
-;-----------------------------------------------------------------------------
-
-;-----------------------------------------------------------------------------
-; responseDelay
-;
-; Uses a string of nop codes to create a delay.  The nops are used because
-; they require no register modifications.
-;
-; Shared Serial Port Timing Notes:
-;
-; The four DSP cores share the muxed serial port used to transmit data to
-; the FPGA.  After the DMA begins transmitting, other functions begin
-; monitoring the DMA and serial port transmit buffer status -- when the
-; transmission is complete, the port is released so another DSP core can use
-; it.  The release time varies depending on what the core is doing. It appears
-; that responding functions with very short execution time can return a packet
-; too quickly for the controlling core to release the port after its own
-; transmission.
-;
-; Oddly enough, increasing the AScan time to maximum actually reduces the
-; collisions as the AScan processing seems to ensure the serial port release
-; check code gets called more often.
-;
-; It was considered to have the host wait for an ack packet after each
-; transmission to increase the timing, but some calls such as for AScan
-; packets don't wait for an ack in order to speed up the display.  Also, this
-; would have drastically increased the overhead for all calls.
-;
-; The current best solution is for all of the response functions which have
-; a very quick response time to insert a delay such as the one provided
-; by this function before beginning transmission of the return packet.  This
-; delay is no worse than that probably encountered by getPeakData which the
-; code must accommodate anyway.
-;
-
-responseDelay:
-
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-	nop
-
-	ret
-
-; end of responseDelay
 ;-----------------------------------------------------------------------------
 
 ;-----------------------------------------------------------------------------
@@ -6316,10 +6187,7 @@ $1:
 $2:
 	ld      #Variables1, DP         				; point to Variables1 page
 	bitf    processingFlags1, #TRANSMITTER_ACTIVE	; check if transmitter is active
-	
-	call		readSerialPort	;debug mks
-
-	;cc		readSerialPort, NTC      				; read data from the serial port if not
+	cc		readSerialPort, NTC      				; read data from the serial port if not
 													; don't call if transmitter still
 													; active from previous call as
 													; this function sends packets
