@@ -1757,6 +1757,19 @@ $2:
 ; that problem and not required to ensure that another core has released the
 ; transmitter.
 ; CORRECTION: for some reason, a much greater delay is required -- why?
+; Things tried: 
+;	moving delay just before first feed to DXR11 (worked)
+;	moving serial port start and increaed delay just before the first feed to DXR11
+;	 (did not work, discovered that serial start must occur before starting DMA)
+;	moving serial start just before DMA start with increased delay just before DXR11 feed
+;	 (worked)
+;	It appears that the delay is required between the serial port start and DXR11 feed.
+;	 It is still possible that the delay is fixing some other problem between DSP and
+;	 FPGA...frame pulses are being sent during the delay -- messing things up?
+;
+; All tests point to requiring 1300nS delay between serial start and first feed when
+; it should be around 120ns. 
+; Could use timer interrupt to begin feed after a delay to avoid wasting time?
 ;
 ; This function will add header information, using packet format of:
 ;
