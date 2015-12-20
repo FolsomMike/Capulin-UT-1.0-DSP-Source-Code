@@ -244,7 +244,6 @@ GATE_FOR_INTERFACE				.equ	0x0100
 GATE_INTEGRATE_ABOVE_GATE		.equ	0x0200
 GATE_QUENCH_ON_OVERLIMIT		.equ	0x0400
 GATE_TRIGGER_ASCAN_SAVE			.equ	0x0800
-SUBSEQUENT_SHOT_DIFFERENTIAL	.equ	0x1000
 
 ;bit masks for gate results data flag
 
@@ -586,8 +585,8 @@ DSP_ACKNOWLEDGE					.equ	127
 	;			1 = quench signal on signal over limit
 	; bit 11: 	0 = this is not an AScan trigger gate
 	;			1 = AScan sent if this gate exceeded (must have peak search enabled)
-	; bit 12:	0 = subsequent differential noise cancellation inactive
-	;			1 = subsequent differential noise cancellation active
+	; bit 12:	0 = find center of dual peaks inactive
+	;			1 = find center of dual peaks active
 	; bit 13:	unused
 	; bit 14:	lsb - gate data averaging buffer size
 	; bit 15:	msb - gate data averaging buffer size
@@ -4020,23 +4019,6 @@ storeGatePeakResult:
 	ld      *+AR2(+1), A            ; save copy of miss count threshold for quick access
 	stl     A, missCountThreshold
 
-	; if subsequent differential noise cancellation mode is active,
-	; subtract the peak from the peak of the previous shot (will actually
-	; be two shots ago as each DSP core handles every other shot).
-
-	bitf	scratch3, #SUBSEQUENT_SHOT_DIFFERENTIAL     ; gate function flags
-	bc      checkForNewPeak, NTC    ; check for subsequent differential mode
-
-	call    pointToGateResults      ; point AR2 to the entry for gate in scratch1
-
-	mar     *+AR2(11)               ; move to gate peak value from previous data set
-	ld      scratch2, A             ; load the current peak for storing
-	ld      scratch2, B             ; load the current peak for subtracting
-
-	sub     *AR2, B                 ; subtract the previous peak from the current peak
-	stl     B, scratch2             ; save the modified current peak
-	stl     A, *AR2                 ; save the unmodified current peak for use on next shot
-
 	; check for new peak
 	; checks to see if new peak is larger than stored peak and
 	; replaces latter with former if so
@@ -4817,7 +4799,7 @@ $2:
 ; 0.233 inches/uS = 233,000 inches / sec
 ; 233,000 inches * 0.000000015 sec = .003495 inches
 ;
-; We really need at least .003495 inches of resolution.
+; We really need at least .002 inches of resolution.
 ;
 ; BUT -- since we measure twice the distance of the thickness because we
 ;  are measuring there and back, we then divide by two which also increases
