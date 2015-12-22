@@ -244,6 +244,9 @@ GATE_FOR_INTERFACE				.equ	0x0100
 GATE_INTEGRATE_ABOVE_GATE		.equ	0x0200
 GATE_QUENCH_ON_OVERLIMIT		.equ	0x0400
 GATE_TRIGGER_ASCAN_SAVE			.equ	0x0800
+GATE_FIND_DUAL_PEAK_CENTER		.equ	0x1000
+GATE_APPLY_SIGNAL_AVERAGING		.equ	0x2000
+
 
 ;bit masks for gate results data flag
 
@@ -290,7 +293,7 @@ DSP_GET_PEAK_DATA				.equ	13
 DSP_SET_RECTIFICATION			.equ	14
 DSP_SET_FLAGS1					.equ	15
 DSP_UNUSED1						.equ	16
-DSP_SET_GATE_SIG_PROC_THRESHOLD	.equ	17
+DSP_SET_GATE_SIG_PROC_TUNING	.equ	17
 DSP_GET_MAP_BLOCK_CMD			.equ	18
 DSP_GET_MAP_COUNT_CMD			.equ	19
 DSP_RESET_MAPPING_CMD			.equ	20
@@ -526,9 +529,9 @@ DSP_ACKNOWLEDGE					.equ	127
 	; word  6: gate level
 	; word  7: gate hit count threshold (number of consecutive violations before flag)
 	; word  8: gate miss count threshold (number of consecutive non-violations before flag)
-	; word  9: Threshold 1
-	; word 10: unused
-	; word 11: unused
+	; word  9: signal processing tuning value 1
+	; word 10: signal processing tuning value 2
+	; word 11: signal processing tuning value 3
 	; word 12: unused
 	; word 13: unused
 	; word 0: second gate ID number
@@ -587,7 +590,8 @@ DSP_ACKNOWLEDGE					.equ	127
 	;			1 = AScan sent if this gate exceeded (must have peak search enabled)
 	; bit 12:	0 = find center of dual peaks inactive
 	;			1 = find center of dual peaks active
-	; bit 13:	unused
+	; bit 13:	0 = do not apply signal averaging to return value
+	;			1 = apply signal averaging to return value
 	; bit 14:	lsb - gate data averaging buffer size
 	; bit 15:	msb - gate data averaging buffer size
 	;
@@ -1597,8 +1601,8 @@ $1:	ldu     *AR3+%, A               ; reload core ID from packet
 	sub     #DSP_SET_FLAGS1, 0, A, B    ; same comment as above for
 	bc      setFlags1, BEQ              ; this entire section
 
-	sub     #DSP_SET_GATE_SIG_PROC_THRESHOLD, 0, A, B
-	bc      setGateSignalProcessingThreshold, BEQ
+	sub     #DSP_SET_GATE_SIG_PROC_TUNING, 0, A, B
+	bc      setGateSignalProcessingTuningValues, BEQ
 
 	sub     #DSP_SET_GAIN_CMD, 0, A, B
 	bc      setSoftwareGain, BEQ
@@ -2263,25 +2267,44 @@ setFlags1:
 ;-----------------------------------------------------------------------------
 
 ;-----------------------------------------------------------------------------
-; setGateSignalProcessingThreshold
+; setGateSignalProcessingTuningValues
 ;
-; Sets a value to be used by the current signal processing method for
+; Sets values to be used by the current signal processing method for
 ; establishing thresholds, applying gain, choosing number of samples to
-; average, etc..  Each processing method has its own use for the value.
+; average, etc..  Each processing method has its own use for the values.
 ;
 ; On entry, AR3 should be pointing to word 2 (received packet data size) of
 ; the received packet.
 ;
 
-setGateSignalProcessingThreshold:
+setGateSignalProcessingTuningValues:
 
-	; wip mks -- does nothing, needs to be completed
+	ld      #Variables1, DP
+
+	mar     *AR3+%                  ; skip past the packet size byte
+
+	ld      *AR3+%, A               ; load the gate index number
+	call    pointToGateInfo         ; point AR2 to info for gate in A
+	
+	stm     #2, BRC                 ; save three words
+									; warning: need at least on instruction before rptb
+
+	mar     *+AR2(+8)               ; skip to the Signal Processing Tuning Value 1 entry
+
+	rptb    $1
+
+	ld      *AR3+%, 8, A            ; get high byte
+	adds    *AR3+%, A               ; add in low byte
+
+	stl     A, *AR2+                ; store tuning value
+
+$1:	nop								; end of repeat block
 
 	b       sendACK                 ; send back an ACK packet
 
 	.newblock                       ; allow re-use of $ variables
 
-; end of setGateSignalProcessingThreshold
+; end of setGateSignalProcessingTuningValues
 ;-----------------------------------------------------------------------------
 
 ;-----------------------------------------------------------------------------
@@ -3820,6 +3843,10 @@ $1:	mvdd    *AR3+, *AR4+
 ;
 ; On entry, DP should point to Variables1 page.
 ;
+; On exit:
+; If the signal exceeded the gate level, the A register returns 0 to signal
+; that the gate was processed. Otherwise, A register returns -1.
+;
 
 findGatePeak:
 
@@ -4180,7 +4207,7 @@ $2:	ld      #-1, A                   ; return -1 - peak does not exceed gate
 ;
 ; The crossing point and its buffer location and the previous point and
 ; its buffer location are stored in the gate's results entry in
-; gateResultBuffer.  If A is returned not zero, the data in the results
+; gateResultBuffer.  If A is returned non-zero, the data in the results
 ; entry is undefined and should not be used.
 ;
 ; NOTE: If the signal equals the gate level, it is considered to exceed it.
@@ -5300,19 +5327,7 @@ processWallGates:
 	bitf    *AR2, #GATE_WALL_START  ; find crossing if gate is used for wall start
 	bc      $3, NTC
 
-	andm    #~GATE_MAX_MIN, *AR2    	; force gate to be a MAX gate
-
-	bitf    *AR2, #GATE_FIND_CROSSING   ; use signal crossing if true
-	pshm	AR2
-	cc      findGateCrossing, TC
-	popm	AR2
-	nop									; pipeline protection
-
-	bitf    *AR2, #GATE_FIND_PEAK   	; use signal peak if true
-	pshm	AR2
-	cc      findGatePeak, TC
-	popm	AR2
-	nop									; pipeline protection
+	cc		processWallGate
 
 	andm    #~WALL_START_FOUND, processingFlags1 ; clear the found flag
 
@@ -5329,19 +5344,7 @@ processWallGates:
 $3:	bitf	*AR2, #GATE_WALL_END    ; find crossing if gate is used for wall end
 	bc      $4, NTC
 
-	andm    #~GATE_MAX_MIN, *AR2    ; force gate to be a MAX gate
-
-	bitf    *AR2, #GATE_FIND_CROSSING   ; use signal crossing if true
-	pshm	AR2
-	cc      findGateCrossing, TC
-	popm	AR2
-	nop									; pipeline protection
-
-	bitf    *AR2, #GATE_FIND_PEAK   ; use signal peak if true
-	pshm	AR2
-	cc      findGatePeak, TC
-	popm	AR2
-	nop									; pipeline protection
+	cc		processWallGate
 
 	andm    #~WALL_END_FOUND, processingFlags1 ; clear the found flag
 
@@ -5364,6 +5367,69 @@ $4:
 	.newblock					; allow re-use of $ variables
 
 ; end of processWallGates
+;-----------------------------------------------------------------------------
+
+;-----------------------------------------------------------------------------
+; processWallGate
+;
+; Processes a single wall gate according to its function flags, processing
+; flags, and tuning values.
+;
+; On exit:
+; If the signal exceeded the gate level, the A register returns 0 to signal
+; that the gate was processed. Otherwise, A register returns -1.
+;
+
+processWallGate:
+
+	andm    #~GATE_MAX_MIN, *AR2    ; force gate to be a MAX gate
+
+	bitf    *AR2, #GATE_FIND_CROSSING   ; use signal crossing if true
+	pshm	AR2
+	cc      findGateCrossing, TC
+	popm	AR2
+	nop									; pipeline protection
+
+	bitf    *AR2, #GATE_FIND_PEAK   ; use signal peak if true
+	pshm	AR2
+	cc      findGatePeak, TC
+	popm	AR2
+	nop									; pipeline protection
+
+	bitf    *AR2, #GATE_FIND_DUAL_PEAK_CENTER  ; use center point between dual peaks if true
+	pshm	AR2
+	cc      findCenterBetweenDualPeaks, TC
+	popm	AR2
+	nop									; pipeline protection
+
+	ret
+
+	.newblock					; allow re-use of $ variables
+
+; end of processWallGate
+;-----------------------------------------------------------------------------
+
+;-----------------------------------------------------------------------------
+; findCenterBetweenDualPeaks
+;
+; If signal exceeds the gate level, this function will find the center point
+; timewise between the two largest peaks in the gate area. The second peak
+; does not have to exceed the level.
+;
+; On exit:
+; If the signal exceeded the gate level, the A register returns 0 to signal
+; that the gate was processed. Otherwise, A register returns -1.
+;
+
+findCenterBetweenDualPeaks:
+
+	call	findGatePeak
+
+	ret
+
+	.newblock					; allow re-use of $ variables
+
+; end of findCenterBetweenDualPeaks
 ;-----------------------------------------------------------------------------
 
 ;-----------------------------------------------------------------------------
@@ -5662,7 +5728,7 @@ $2:	add     #2, B                   ; increment the flag by 2 (each DSP gets eve
 	cc      processGates, TC            ; also processes the DAC
 
 	call    processAScan                ; store an AScan dataset if enabled
-
+										; processGates must be called first to apply DAC gains if appropriate
 	ret
 
 	.newblock                           ; allow re-use of $ variables
