@@ -1,3 +1,6 @@
+
+@REM The phrase 1>>results.txt 2>&1 redirects both Standard Output and Standard Error to the file.
+
 "..\..\..\TMS320C54x Tools\asm500.exe" "%~1.asm" -l 1>>results.txt 2>&1
 
 "..\..\..\TMS320C54x Tools\asm500.exe" "%~1 Debug.asm" -l 1>>results.txt 2>&1
@@ -15,5 +18,3 @@
 "..\..\..\TMS320C54x Tools\abs500.exe" "%~1.out" 1>>results.txt 2>&1
 
 "..\..\..\TMS320C54x Tools\asm500.exe" -a "%~1.abs" 1>>results.txt 2>&1
-
-copy "CapulinUTDSP.hex" "c:\Users\Mike\Documents\7 - Java Projects\Chart\DSP\"
