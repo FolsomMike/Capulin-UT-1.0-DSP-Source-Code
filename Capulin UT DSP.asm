@@ -5327,13 +5327,15 @@ processWallGates:
 	bitf    *AR2, #GATE_WALL_START  ; find crossing if gate is used for wall start
 	bc      $3, NTC
 
-	cc		processWallGate
+	call	processWallGate
 
 	andm    #~WALL_START_FOUND, processingFlags1 ; clear the found flag
 
 	xc      2, AEQ                  ; if A returned 0 from function call,
 									; set the found flag -- crossing found
 									; or peak was above gate
+									; xc 2,AEQ only skips the next instruction
+									;  since it is a two-word opcode
 
 	orm     #WALL_START_FOUND, processingFlags1
 
@@ -5344,13 +5346,15 @@ processWallGates:
 $3:	bitf	*AR2, #GATE_WALL_END    ; find crossing if gate is used for wall end
 	bc      $4, NTC
 
-	cc		processWallGate
+	call	processWallGate
 
 	andm    #~WALL_END_FOUND, processingFlags1 ; clear the found flag
 
 	xc      2, AEQ                  ; if A returned 0 from function call,
 									; set the found flag -- crossing found
 									; or peak was above gate
+									; xc 2,AEQ only skips the next instruction
+									;  since it is a two-word opcode
 
 	orm     #WALL_END_FOUND, processingFlags1
 
