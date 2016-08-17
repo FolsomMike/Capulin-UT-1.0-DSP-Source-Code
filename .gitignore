@@ -27,6 +27,7 @@ Distributions/
 *.obj
 *.abs
 results.txt
+ab Copy Hex File Results.txt
 *.prj
 Debug/
 CapulinUT1-0/CapulinUT.CS_/
