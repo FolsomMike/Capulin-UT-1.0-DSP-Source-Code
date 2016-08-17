@@ -5716,7 +5716,7 @@ $2:	add     #2, B                   ; increment the flag by 2 (each DSP gets eve
 	; split each word into one two-byte samples (the FPGA packs two samples
 	; into each word)
 
-	; process without filtering if filter as zero coefficients, filter otherwise
+	; process without filtering if filter has zero coefficients, filter otherwise
 
 	ld		numCoeffs, A
 	cc		processSamplesWithoutFilter, AEQ
