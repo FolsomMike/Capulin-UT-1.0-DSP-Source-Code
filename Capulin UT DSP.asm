@@ -1807,13 +1807,9 @@ sendPacket:
 	stm     DMSRC2, DMSA            ;set source address to buffer
 	stm     #SERIAL_PORT_XMT_BUFFER, DMSDN
 
-	add     #5, A                   ; A contains the size of the data in the buffer
-	stm     DMCTR2, DMSA            ;  adjust for the header bytes in the total
-	stlm    A, DMSDN                ;  byte count and store the new value
-									; in DMA channel 2 element counter
-									; (the value stored is one less than the
-									;  actual number of bytes to be sent as
-									;  required by the DMA)
+	add     #6, A                   ; A contains the size of the data in the buffer
+	stm     DMCTR2, DMSA            ;  adjust for the header bytes and store the new value
+	stlm    A, DMSDN                ;  in DMA channel 2 element counter
 
 ; a ffh value will be sent first to trigger the DMA transfer, this must be
 ; followed by 00h, 99h in the buffer to force the FPGA to begin storing the data
