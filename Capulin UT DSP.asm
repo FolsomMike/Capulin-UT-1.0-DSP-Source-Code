@@ -2053,8 +2053,10 @@ $1:
 	ld      getAScanBlockSize, 1, A ; load block word size, shift to multiply by two
 									; to calculate number of bytes
 	add     #5, A                   ; one more word (two more bytes) actually
-									; transferred by the loop so add 2, three more bytes
-									; are added to the packet as well so add 3 more
+									; transferred by the loop due to banz behavior
+									; so add 2, three more bytes (1 byte for scale,
+									; 2 bytes for IFace crossing point) are added
+									; to the packet as well so add 3 more for 5 total
 
 	ld      #DSP_GET_ASCAN_BLOCK_CMD, B ; load message ID into B before calling
 
@@ -3160,6 +3162,7 @@ processAScan:
 	bitf    flags1, #ASCAN_SLOW_ENABLED ; process AScan slow if enabled
 	bc      processAScanSlow, TC        ; (this is safe to use during inspection)
 										; ONLY use fast or slow version
+	ret
 
 ; end of processAScan
 ;-----------------------------------------------------------------------------
@@ -5827,6 +5830,9 @@ processSamplesWithFilter:
 	; process upper byte packed in the word
 
 	ld		*AR2+, B				; load dual-byte with sign extension for high byte
+
+	abs		B				;debug mks
+
 	stl		B, -8, *AR1				; store upper byte at top of filter buffer for filtering
 
 	ld		firBufferEnd, A			; convolution start point (from bottom of buffer)
@@ -5855,6 +5861,8 @@ rect3:
 
 	ld		*AR1, 16, B				; reload, shifting to upper byte of upper word
 									; this causes the proper sign extension
+
+	abs		B				;debug mks
 
 	sth		B, -8, *AR1				; shift byte to lower byte and save at top of filter buffer for filtering
 
