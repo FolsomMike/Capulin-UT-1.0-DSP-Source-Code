@@ -5825,11 +5825,12 @@ processSamplesWithFilter:
 
 	; process upper byte packed in the word
 
-	ld		*AR2+, B				; load dual-byte with sign extension for high byte
+	ld		*AR2,-8, B		; load dual-byte with sign extension to process first byte,
+							;  shifting high (first) byte to low byte
 
 	abs		B				;debug mks
 
-	stl		B, -8, *AR1				; store upper byte at top of filter buffer for filtering
+	stl		B, *AR1			; store first byte at top of filter buffer for filtering
 
 	ld		firBufferEnd, A			; convolution start point (from bottom of buffer)
 	stlm	A, AR0
@@ -5847,20 +5848,21 @@ rect3:
 	stl		A, ASM, *AR3+			; store filter output in the processed buffer
 									; result is shifted by ASM bits
 
-	; process lower byte packed in the word (still in register B)
+	; process second (lower) byte packed in the word
 
 	; shift/save/load to isolate lower byte and achieve proper sign extension
 	;  the top of the filter buffer is used as a scratch variable for this operation
 
+	ld		*AR2+, B				; reload the sample to process the second (lower) byte		
+
 	stl		B, 8, *AR1				; shift lower byte to upper byte and store
 									; lower 8 bits will be zeroed
 
-	ld		*AR1, 16, B				; reload, shifting to upper byte of upper word
-									; this causes the proper sign extension
+	ld		*AR1,-8, B				;reload to force sign extension and shift to lower byte
 
 	abs		B				;debug mks
 
-	sth		B, -8, *AR1				; shift byte to lower byte and save at top of filter buffer for filtering
+	stl		B, *AR1					; save second byte at top of filter buffer for filtering
 
 	ld		firBufferEnd, A			; convolution start point (from bottom of buffer)
 	stlm	A, AR0
