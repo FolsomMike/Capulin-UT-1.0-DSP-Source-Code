@@ -276,30 +276,31 @@ MAX_COEFF_BLOCK_NUM		.equ	8		; max number for coefficients packet Descriptor Cod
 ; Should match settings in host computer.
 ;
 
-DSP_NULL_MSG_CMD				.equ	0
-DSP_GET_STATUS_CMD 				.equ	1
-DSP_SET_GAIN_CMD 				.equ	2
-DSP_GET_ASCAN_BLOCK_CMD			.equ	3
-DSP_GET_ASCAN_NEXT_BLOCK_CMD	.equ	4
-DSP_SET_AD_SAMPLE_SIZE_CMD		.equ	5
-DSP_SET_DELAYS					.equ	6
-DSP_SET_ASCAN_RANGE				.equ	7
-DSP_SET_GATE					.equ	8
-DSP_SET_GATE_FLAGS				.equ	9
-DSP_SET_DAC						.equ	10
-DSP_SET_DAC_FLAGS				.equ	11
-DSP_SET_HIT_MISS_COUNTS			.equ	12
-DSP_GET_PEAK_DATA				.equ	13
-DSP_SET_RECTIFICATION			.equ	14
-DSP_SET_FLAGS1					.equ	15
-DSP_UNUSED1						.equ	16
-DSP_SET_GATE_SIG_PROC_TUNING	.equ	17
-DSP_GET_MAP_BLOCK_CMD			.equ	18
-DSP_GET_MAP_COUNT_CMD			.equ	19
-DSP_RESET_MAPPING_CMD			.equ	20
-DSP_SET_FILTER_CMD				.equ	21
+DSP_NULL_MSG_CMD					.equ	0
+DSP_GET_STATUS_CMD 					.equ	1
+DSP_SET_GAIN_CMD 					.equ	2
+DSP_GET_ASCAN_BLOCK_CMD				.equ	3
+DSP_GET_ASCAN_NEXT_BLOCK_CMD		.equ	4
+DSP_SET_AD_SAMPLE_SIZE_CMD			.equ	5
+DSP_SET_DELAYS						.equ	6
+DSP_SET_ASCAN_RANGE					.equ	7
+DSP_SET_GATE						.equ	8
+DSP_SET_GATE_FLAGS					.equ	9
+DSP_SET_DAC							.equ	10
+DSP_SET_DAC_FLAGS					.equ	11
+DSP_SET_HIT_MISS_COUNTS				.equ	12
+DSP_GET_PEAK_DATA					.equ	13
+DSP_SET_RECTIFICATION				.equ	14
+DSP_SET_FLAGS1						.equ	15
+DSP_UNUSED1							.equ	16
+DSP_SET_GATE_SIG_PROC_TUNING		.equ	17
+DSP_GET_MAP_BLOCK_CMD				.equ	18
+DSP_GET_MAP_COUNT_CMD				.equ	19
+DSP_RESET_MAPPING_CMD				.equ	20
+DSP_SET_FILTER_CMD					.equ	21
+DSP_SET_FILTER_ABS_PREPROCESSING	.equ	22
 
-DSP_ACKNOWLEDGE					.equ	127
+DSP_ACKNOWLEDGE						.equ	127
 
 ; end of Message / Command IDs
 ;-----------------------------------------------------------------------------
@@ -1643,6 +1644,9 @@ $1:	ldu     *AR3+%, A               ; reload core ID from packet
 	sub     #DSP_SET_RECTIFICATION, 0, A, B
 	bc      setRectification, BEQ
 
+	sub     #DSP_SET_FILTER_ABS_PREPROCESSING, 0, A, B
+	bc      setFilterABSPreProcessing, BEQ
+
 	sub     #DSP_GET_MAP_BLOCK_CMD, 0, A, B
 	bc      getMapBlock, BEQ
 
@@ -2442,7 +2446,7 @@ setRectification:
 
 	ld      *AR3+%, A               ; get rectification selection
 
-; choose the appropriate instruction code for the desired rectification
+; choose the appropriate instruction code for the specified rectification
 
 	st      #0f495h, dma3Source     ; opcode for NOP - for RF_WAVE/POS_HALF
 									; this will be default used if rectification
@@ -2488,6 +2492,71 @@ $6:	stm     DMDST3, DMSA            ; set destination address to position of fir
 	.newblock                       ; allow re-use of $ variables
 
 ; end of setRectification
+;-----------------------------------------------------------------------------
+
+;-----------------------------------------------------------------------------
+; setFilterABSPreProcessing
+;
+; Enables or disables code which takes the absolute value of each raw sample
+; before it is processed by the digital filter.
+;
+; If AR3 points to the packet size byte, call setFilterABSPreProcessing and
+; it will be skipped and the state byte loaded next.
+; If A register already contains the state byte, call setFilterABSPreProcessing2
+; instead.
+;
+; Note: the function handleSetFilterCommand will set the mode when the filter
+; is changed. This function is a convenience method for directly setting the mode.
+;
+; State is set by the first data byte of the received packet:
+;
+; 0 = absolute value not performed
+; 1 = absolute value performed
+;
+; The code is modified to change an instruction in the filter processing
+; loop to perform the operation or a nop instead.  The code modification is
+; used instead of a switch in the loop because the loop is very time
+; critical.
+;
+; See the notes in the header for setRectification function for details on
+; how the code modification is performed.
+;
+; On entry, AR3 should be pointing to word 2 (received packet data size) of
+; the received packet.
+;
+
+setFilterABSPreProcessing:
+
+	mar     *AR3+%                  ; skip past the packet size byte
+	ld      *AR3+%, A               ; get control byte
+
+setFilterABSPreProcessing2:
+
+	ld      #Variables1, DP
+
+	bitf	coreID, #01h			; check core, only A or C can modify, exit if B or D
+	bc		sendACK, NTC			; core id = 1/2/3/4, B&D will have bit 0 cleared
+
+; choose the appropriate instruction code for the specified processing
+
+	st      #0f495h, dma3Source     ; opcode for NOP
+
+	xc      2, ANEQ
+	st      #0f785h, dma3Source     ; opcode for ABS B
+
+	stm     DMDST3, DMSA            ; set destination address to position of first
+	stm     #abs1, DMSDN			; instruction which needs to be changed
+	call	runAndWaitOnDMA3		; in the sample processing loop
+
+	stm     DMDST3, DMSA            ; set destination address to position of second
+	stm     #abs2, DMSDN			; instruction which needs to be changed
+	call	runAndWaitOnDMA3		; in the sample processing loop
+
+	b       sendACK                 ; send back an ACK packet
+
+	.newblock                       ; allow re-use of $ variables
+
+; end of setFilterABSPreProcessing
 ;-----------------------------------------------------------------------------
 
 ;-----------------------------------------------------------------------------
@@ -2590,8 +2659,8 @@ handleResetMappingCommand:
 ; The first byte after the command byte is the Descriptor Code which describes
 ; the values contained in the packet:
 ;
-;  00: the following byte contains the number of filter coefficients
-;      the byte after that contains the right bit shift amount for scaling
+;  00: the packet contains the number of filter coefficients, the bit shift
+;       amount for convolution, and the preprocessing mode
 ;  01: the following 8 bytes contain the first set of four coefficient words
 ;  02: the following 8 bytes contain the second set of four coefficient words
 ;  03: the following 8 bytes contain the third set of four coefficient words
@@ -2615,7 +2684,7 @@ handleResetMappingCommand:
 ;
 ; The number of coefficients should not be more than MAX_NUM_COEFFS.
 ;   If received value is greater, will be limited to the max.
-; The number of bits to shift should not be more than allowed by DSP.
+; The number of bits to shift should be in the range –16 <= ASM <= 15.
 ;	If received value is greater, an unpredictable shift will be applied.
 ;
 ; If the filter array is empty (a single element set to zero), the array size
@@ -2685,10 +2754,9 @@ $1:	stl     A, numCoeffs			; store value
 	ld		filterScale, A			;   properly from byte to word
 	stl		A, -8, filterScale
 
-	; no need to skip AR3 past end of packet as readSerialPort uses its own pointer
-
-	b       sendACK                 ; send back an ACK packet
-
+	ld      *AR3+%, A					; get filter preprocessing mode
+	b		setFilterABSPreProcessing2	; no need to skip AR3 past end of packet as
+										; readSerialPort uses its own pointer
 $2:
 
 	bitf	coreID, #01h			; check core, only A or C can modify coefficient table
@@ -5825,12 +5893,14 @@ processSamplesWithFilter:
 
 	; process upper byte packed in the word
 
-	ld		*AR2,-8, B		; load dual-byte with sign extension to process first byte,
-							;  shifting high (first) byte to low byte
+	ld		*AR2,-8, B				; load dual-byte with sign extension to process first byte,
+									;  shifting high (first) byte to low byte
 
-	abs		B				;debug mks
+abs1:
+	nop								; this opcode gets replaced with other codes as specified
+									; by the host for filter pre-processing, such as ABS
 
-	stl		B, *AR1			; store first byte at top of filter buffer for filtering
+	stl		B, *AR1					; store first byte at top of filter buffer for filtering
 
 	ld		firBufferEnd, A			; convolution start point (from bottom of buffer)
 	stlm	A, AR0
@@ -5860,7 +5930,9 @@ rect3:
 
 	ld		*AR1,-8, B				;reload to force sign extension and shift to lower byte
 
-	abs		B				;debug mks
+abs2:
+	nop								; this opcode gets replaced with other codes as specified
+									; by the host for filter pre-processing, such as ABS
 
 	stl		B, *AR1					; save second byte at top of filter buffer for filtering
 
