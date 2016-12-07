@@ -5116,7 +5116,7 @@ $2:	ldm     AR5, A                  ; use loop count as gate index
 	stlm    A, AR4
 
 	ld      *AR2+, A                ; set block repeat counter to the
-	sub     #1, A                   ; gate width / 3, subtract 1 to account
+	sub     #1, A                   ; gate width, subtract 1 to account
 	stlm    A, BRC                  ; for loop behavior
 
 	; see notes in header of setSoftwareGain function for details on -9 shift
