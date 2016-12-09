@@ -225,6 +225,8 @@ WALL_START_FOUND			.equ	0x0002
 WALL_END_FOUND				.equ	0x0004
 TRANSMITTER_ACTIVE			.equ	0x0008	; transmitter active flag
 CREATE_ASCAN				.equ	0x0010	; signals that a new AScan dataset should be created
+CROSSED_GATE_A				.equ	0x0020	; signals that crossing check gate A was exceeded
+CROSSED_GATE_B				.equ	0x0040	; signals that crossing check gate B was exceeded
 
 POSITIVE_HALF				.equ	0x0000
 NEGATIVE_HALF				.equ	0x0001
@@ -246,7 +248,8 @@ GATE_QUENCH_ON_OVERLIMIT		.equ	0x0400
 GATE_TRIGGER_ASCAN_SAVE			.equ	0x0800
 GATE_FIND_DUAL_PEAK_CENTER		.equ	0x1000
 GATE_APPLY_SIGNAL_AVERAGING		.equ	0x2000
-
+GATE_CHECK_FOR_CROSSING_A		.equ	0x4000
+GATE_CHECK_FOR_CROSSING_B		.equ	0x8000
 
 ;bit masks for gate results data flag
 
@@ -593,8 +596,10 @@ DSP_ACKNOWLEDGE						.equ	127
 	;			1 = find center of dual peaks active
 	; bit 13:	0 = do not apply signal averaging to return value
 	;			1 = apply signal averaging to return value
-	; bit 14:	lsb - gate data averaging buffer size
-	; bit 15:	msb - gate data averaging buffer size
+	; bit 14:	0 = not crossing check gate A
+	; 			1 = check if signal crosses gate
+	; bit 15:	0 = not crossing check gate B
+	; 			1 = check if signal crosses gate
 	;
 	; Caution 1: the GATE_MAX_MIN bit in the gate flag above matches the
     ;            GATE_MAX_MIN flag position in the gate results buffer
@@ -2684,7 +2689,7 @@ handleResetMappingCommand:
 ;
 ; The number of coefficients should not be more than MAX_NUM_COEFFS.
 ;   If received value is greater, will be limited to the max.
-; The number of bits to shift should be in the range –16 <= ASM <= 15.
+; The number of bits to shift should be in the range ?16 <= ASM <= 15.
 ;	If received value is greater, an unpredictable shift will be applied.
 ;
 ; If the filter array is empty (a single element set to zero), the array size
@@ -3617,7 +3622,7 @@ $3:	nop
 ; sets).
 ;
 ; The number of sets to average (buffer size) is transferred from the host
-; in the upper most two bits of the gate's flags.
+; in the upper most two bits of the gate's flags. MKS -- no longer true!!!! those bits used for something else now!!!
 ;
 ; The counter tracking which buffer was filled last time is stored in the upper
 ; most two bits of the gate's ID number.
@@ -5213,6 +5218,20 @@ $8:	banz    $2, *AR5-               ; decrement DAC gate index pointer
 ; or non-tracking) are processed if no crossing found in an active interface
 ; gate.
 ;
+; Some configurations use two gates per reflection; one is a lower gate used
+; to catch the signal crossing edge for measurement purposes, the second is a
+; higher crossing check gate used to determine if the signal reached a specified
+; height...if not then the wall measurement is ignored. Each reflection can use a
+; cross check gate or not...one, two or neither. These extra gates are used to
+; avoid measuring at the top of the reflection when it drops in height such that
+; the crossing point is near the peak for the measurement gate. In such case, the
+; peak is often distorted and unusable for measurement.
+;
+; On program start, processingFlags1.CROSSED_GATE_A and processingFlags1.
+; CROSSED_GATE_A are preset. If either Crossing Check gate is not present, then
+; it's associated flag will never be cleared so it will always show as being crossed
+; and will have no effect.
+;
 
 processGates:
 
@@ -5280,6 +5299,14 @@ $2:	ldm     AR5, A                  ; use loop count as gate index
 
 	bc      $8, AEQ					; skip to next gate if current gate was handled
 									; as a wall gate by processWallGates
+
+	pshm    AR2						; save gate info pointer
+	call    processCrossCheckGates	; if this is a Crossing Check gate, handle accordingly
+	popm    AR2                     ; restore gate info pointer
+	nop                             ; pipeline protection
+
+	bc      $8, AEQ					; skip to next gate if current gate was handled
+									; as a Crossing Check gate
 
 	bitf    *AR2, #GATE_FIND_PEAK   ; find peak if bit set
 	bc      $5, NTC
@@ -5351,16 +5378,23 @@ $9:	; Check if Wall readings need to be processed.
 	cc      storeWallValueInMapBuffer, TC
 
 	; check to see if the interface was found, the first wall reflection was
-	; found, and the second wall reflection was found
+	; found, and the second wall reflection was found, and if the crossing
+	; check gates were exceeded (see notes at top of this function)
 	; exit if any were missed - the signal will be ignored
 
-	bitf    processingFlags1, #IFACE_FOUND          ; interface check
+	bitf    processingFlags1, #IFACE_FOUND          ; interface test
 	rc      NTC
 
-	bitf    processingFlags1, #WALL_START_FOUND     ; first reflection check
+	bitf    processingFlags1, #WALL_START_FOUND     ; first reflection test
 	rc      NTC
 
-	bitf    processingFlags1, #WALL_END_FOUND       ; second reflection check
+	bitf    processingFlags1, #WALL_END_FOUND       ; second reflection test
+	rc      NTC
+
+	bitf    processingFlags1, #CROSSED_GATE_A       ; first cross check gate test
+	rc      NTC
+
+	bitf    processingFlags1, #CROSSED_GATE_B       ; second cross check gate test
 	rc      NTC
 
 	b       processWall                     ; calculate the wall thickness
@@ -5383,6 +5417,9 @@ $9:	; Check if Wall readings need to be processed.
 ; gates for the DSP code to function properly for wall measurement. Hence, all
 ; wall gates are forced to be MAX gates in this function. The DSP's peak
 ; trapping code for wall ignores the gates' MIN/MAX flag.
+;
+; On entry:
+; AR2 should point to the flags entry for the gate.
 ;
 ; On exit:
 ; If the gate is a Wall start or end gate, the A register returns 0 to signal
@@ -5478,6 +5515,69 @@ processWallGate:
 	.newblock					; allow re-use of $ variables
 
 ; end of processWallGate
+;-----------------------------------------------------------------------------
+
+;-----------------------------------------------------------------------------
+; processCrossCheckGates
+;
+; If the gate is Cross Check Gate A or B, it is processed accordingly.
+; If not, does nothing.
+;
+; On entry:
+; AR2 should point to the flags entry for the gate.
+;
+; On exit:
+; If the gate is Cross Check Gate A or B, the A register returns 0 to signal
+; that the gate was handled in this function. Otherwise, A register returns -1.
+;
+
+processCrossCheckGates:
+
+	bitf    *AR2, #GATE_CHECK_FOR_CROSSING_A  ; find crossing if Crossing Check gate A
+	bc      $3, NTC
+
+	call	findGateCrossing
+
+	andm    #~CROSSED_GATE_A, processingFlags1 ; clear the found flag
+
+	xc      2, AEQ                  ; if A returned 0 from function call,
+									; set the found flag -- crossing found
+									; xc 2,AEQ only skips the next instruction
+									;  since it is a two-word opcode
+
+	orm     #CROSSED_GATE_A, processingFlags1
+
+	ld      #0, A                   ; return 0 - gate was handled as a Crossing Check gate
+
+	ret
+
+$3:	bitf	*AR2, #GATE_CHECK_FOR_CROSSING_B	; find crossing if Crossing Check gate B
+	bc      $4, NTC
+
+	call	findGateCrossing
+
+	andm    #~CROSSED_GATE_B, processingFlags1 ; clear the found flag
+
+	xc      2, AEQ                  ; if A returned 0 from function call,
+									; set the found flag -- crossing found
+									; xc 2,AEQ only skips the next instruction
+									;  since it is a two-word opcode
+
+	orm     #CROSSED_GATE_B, processingFlags1
+
+	ld      #0, A                   ; return 0 - gate was handled as a Crossing Check gate
+
+	ret
+
+$4:
+
+	ld      #-1, A                  ; return -1 as gate was not a Crossing Check gate
+
+	ret
+
+	.newblock					; allow re-use of $ variables
+
+; end of processCrossCheckGates
 ;-----------------------------------------------------------------------------
 
 ;-----------------------------------------------------------------------------
@@ -6162,6 +6262,10 @@ main:
 	st      #00h, freeTimeCnt0
 	st		#00h, numCoeffs
 	st		#firBuffer+MAX_NUM_COEFFS-1, firBufferEnd
+
+	; preset -- see notes at top of processGates for details
+	orm     #CROSSED_GATE_A, processingFlags1
+	orm     #CROSSED_GATE_B, processingFlags1
 
 	st      #0ffffh, interfaceGateIndex     ; default to no gate index set
 	st      #0ffffh, wallStartGateIndex     ; default to no gate index set
