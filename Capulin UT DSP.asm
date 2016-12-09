@@ -645,7 +645,8 @@ DSP_ACKNOWLEDGE						.equ	127
 	;			(see Caution 1 above)
 	; bit 3:	0 = signal did not exceed the gate level per max/min setting
 	;			1 = signal did exceed the gate level per max/min setting
-	;
+	; bit 4:	0 = result from signal processing is primary
+	;			1 = result from signal processing is secondary
 	; Notes:
 	;
 	; Bit 0 is to flag if the signal exceeded the gate a certain number of times.  It is only set if
@@ -658,6 +659,9 @@ DSP_ACKNOWLEDGE						.equ	127
 	;
 	; Every time the signal does not exceed the gate, hitCount is reset.
 	; Every time the signal does exceed the gate, missCount is reset
+	;
+	; Bit 4 has different meanings for different processing algorithms. See the notes
+	; for each processing routine for details.
 	;
 	; NOTE NOTE NOTE
 	;
@@ -3514,7 +3518,18 @@ processAScanSlowInit:
 ; calculateGateIntegral
 ;
 ; Finds the integral of the data bracketed by the gate which has a level
-; above the gate.  Anything below the gate level is ignored.
+; above the gate.  Anything below the gate level is not summed.
+;
+; If the integral result is greater than zero, that value is returned. If not,
+; the last value in the gate is returned rather than the integral. The host can
+; then use the RESULT_STATUS flag and this value (scaled/clipped/etc) to display
+; a baseline to indicate the noise level. It might be more beneficial to return
+; the gate peak in such case as that better represents the noise level, but that
+; takes a lot more processing time.
+;
+; If the integral result is greater than zero then RESULT_STATUS bit is set in
+; the gate results flags. If instead the last value under the gate is returned,
+; then the flag is cleared.
 ;
 ; NOTE: This should work for all modes -- +Half, -Half, Full, and RF since
 ; only data above the gate is processed.  For most purposes, the gate should
@@ -3580,7 +3595,6 @@ calculateGateIntegral:
 
 	rptb    $3
 
-
 ; load each data point and subtract the gate level to shift it down,
 ; values which then fall below zero will be ignored -- this acts as a
 ; threshold at the gate level
@@ -3597,7 +3611,22 @@ calculateGateIntegral:
 
 $3:	nop
 
-	sfta    A, -2                   ; scale down the result
+	bc      $4, AGT					; if the integral result was > 0, set flag
+									; and return integral value
+
+	ld      *+AR3(-1), B			; return the last value in the gate
+									; do NOT clear RESULT_STATUS flag as it may have
+									; been set by a previous valid result; the flag
+									; is cleared when the peak data is transmitted
+	goto	$5
+
+$4:
+
+	orm     #RESULT_STATUS, *AR2	; signal host that value is a non-zero integral
+
+$5:
+
+;	sfta    A, -2                   ; scale down the result			;debug mks zzz -- try removing this!
 
 	call    storeGatePeakResult     ; store the result
 
