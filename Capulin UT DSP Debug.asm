@@ -16,13 +16,7 @@
 * IMPORTANT NOTE
 *
 * This code is used to setup sample data and call various functions in order
-* to test them in Code Composer or similar.
-*
-* In order to use the IDE debugger to step through code, this file must be
-* compiled and linked.  If it is simply included in the main file using the
-* ".include" directive, the debugger will revert to using an inelegant
-* disassembly window and will not allow the user to step through the original
-* asm code.
+* to test them.
 *
 * To activate this code, set symbol "debug" to non-zero in the file 
 * "Globals.asm".  Different values may select different code sections for
@@ -149,8 +143,9 @@ initDebugger:
 ; storeRegistersAndHalt
 ;
 ; Stores all registers in buffer debuggerVariables so they can be retrieved
-; for display by the debugger. 
+; for display by the debugger.
 ;
+; Call this by executing "intr	2" anywhere in the code.
 ;
 ; If executing "intr 2" inside an interrupt routine, it should only be done just
 ; before the rete instruction. The "intr 2" call will re-enable global interrupts.
@@ -189,7 +184,7 @@ storeRegistersAndHalt:
 	mvkd	PMST, *AR1+
 	mvkd	BRC, *AR1+
 
-	pshm	AR0
+	pshm	AR0						; store value in Stack Pointer
 	mvmm 	SP, AR0
 	mar     *+AR0(+4)				; add 4 to Stack Pointer displayed to get value when function was entered
 	mvkd	AR0, *AR1+				; this accounts for the effect of registers pushed by this debug function
@@ -210,6 +205,7 @@ storeRegistersAndHalt:
 
 	stm     #debuggerVariables, AR1
 	orm		#01h, *AR1					; set the debug halt flag
+
 debuggerHalt:							; loop while flag is set
 	bitf	*AR1, #01h
 	bc	debuggerHalt, TC
@@ -219,6 +215,8 @@ debuggerHalt:							; loop while flag is set
 	popm	ST0
 
 	rete
+
+	.newblock						; allow re-use of $ variables
 
 ; end of storeRegistersAndHalt
 ;-----------------------------------------------------------------------------
