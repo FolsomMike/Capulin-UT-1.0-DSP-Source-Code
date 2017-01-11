@@ -225,6 +225,8 @@ WALL_START_FOUND			.equ	0x0002
 WALL_END_FOUND				.equ	0x0004
 TRANSMITTER_ACTIVE			.equ	0x0008	; transmitter active flag
 CREATE_ASCAN				.equ	0x0010	; signals that a new AScan dataset should be created
+CROSSED_GATE_A				.equ	0x0020	; signals that crossing check gate A was exceeded
+CROSSED_GATE_B				.equ	0x0040	; signals that crossing check gate B was exceeded
 
 POSITIVE_HALF				.equ	0x0000
 NEGATIVE_HALF				.equ	0x0001
@@ -232,6 +234,7 @@ FULL_WAVE					.equ	0x0002
 RF_WAVE						.equ	0x0003
 
 ;bits for gate and DAC flags
+
 GATE_ACTIVE						.equ	0x0001
 GATE_REPORT_NOT_EXCEED			.equ	0x0002
 GATE_MAX_MIN					.equ	0x0004
@@ -246,7 +249,17 @@ GATE_QUENCH_ON_OVERLIMIT		.equ	0x0400
 GATE_TRIGGER_ASCAN_SAVE			.equ	0x0800
 GATE_FIND_DUAL_PEAK_CENTER		.equ	0x1000
 GATE_APPLY_SIGNAL_AVERAGING		.equ	0x2000
+GATE_CHECK_FOR_CROSSING_A		.equ	0x4000
+GATE_CHECK_FOR_CROSSING_B		.equ	0x8000
 
+;bits for gate extended function flags
+
+;note that in the Java code, the flag variable is a 4 byte integer
+;which gets split up into flags and extended flags in the DSP code
+;thus, the constants below are shifted, for example:
+; 0x0001 in DSP extended flags = 0x00010000 in the Java code
+
+USES_FILTER1					.equ	0x0001
 
 ;bit masks for gate results data flag
 
@@ -298,7 +311,6 @@ DSP_GET_MAP_BLOCK_CMD				.equ	18
 DSP_GET_MAP_COUNT_CMD				.equ	19
 DSP_RESET_MAPPING_CMD				.equ	20
 DSP_SET_FILTER_CMD					.equ	21
-DSP_SET_FILTER_ABS_PREPROCESSING	.equ	22
 
 DSP_ACKNOWLEDGE						.equ	127
 
@@ -367,6 +379,8 @@ DSP_ACKNOWLEDGE						.equ	127
 	.bss	heartBeat,1				; incremented constantly to show that program
 									; is running
 
+	.bss	debugVar,1				; used for various temporary debug purposes
+
 	.bss	flags1,1				; bit 0 : sample processing enabled
 									; bit 1 : Gates Enabled
 									; bit 2 : DAC Enabled
@@ -381,10 +395,22 @@ DSP_ACKNOWLEDGE						.equ	127
 	.bss	adSamplePackedSize,1	; size of the data set from the FPGA
 	.bss	fpgaADSampleBufEnd,1	; end of the buffer where FPGA stores A/D samples
 	.bss	coreID,1				; ID number of the DSP core (1-4)
-	.bss	numCoeffs,1				; number of coefficients for FIR filter
-	.bss	numFIRLoops,1			; one less than numCoeffs to work with repeat opcode
-	.bss	firBufferEnd,1			; last position of FIR buffer (based on number of coefficients)
-	.bss	filterScale,1			; scaling for FIR filter output (number of bits to right shift)
+
+; NOTE: DO NOT CHANGE ORDER OF NEXT SET OF VARIABLES - START OF SECTION
+
+	.bss	numCoeffs0,1			; number of coefficients for FIR filter 0
+	.bss	numFIRLoops0,1			; one less than numCoeffsX to work with repeat opcode
+	.bss	firBufferEnd0,1			; last position of FIR buffer 0 (based on number of coefficients)
+	.bss	filterScale0,1			; scaling for FIR filter 0 output (number of bits to right shift)
+	.bss	filterPreProcessMode0,1	; pre-processing mode for filter 0 (none, abs val, etc.)
+	.bss	numCoeffs1,1			; number of coefficients for FIR filter 1
+	.bss	numFIRLoops1,1			; one less than numCoeffsX to work with repeat opcode
+	.bss	firBufferEnd1,1			; last position of FIR buffer 1 (based on number of coefficients)
+	.bss	filterScale1,1			; scaling for FIR filter 1 output (number of bits to right shift)
+	.bss	filterPreProcessMode1,1	; pre-processing mode for filter 1 (none, abs val, etc.)
+
+; NOTE: DO NOT CHANGE ORDER OF NEXT SET OF VARIABLES - END OF SECTION
+
 	.bss	getAScanBlockPtr,1		; points to next data to send to host
 	.bss	getAScanBlockSize,1		; number of AScan words to transfer per packet
 	.bss	hardwareDelay1,1		; high word of FPGA hardware delay
@@ -533,7 +559,7 @@ DSP_ACKNOWLEDGE						.equ	127
 	; word  9: signal processing tuning value 1
 	; word 10: signal processing tuning value 2
 	; word 11: signal processing tuning value 3
-	; word 12: unused
+	; word 12: gate extended function flags (see below)
 	; word 13: unused
 	; word 0: second gate ID number
 	; word 1: ...
@@ -593,14 +619,56 @@ DSP_ACKNOWLEDGE						.equ	127
 	;			1 = find center of dual peaks active
 	; bit 13:	0 = do not apply signal averaging to return value
 	;			1 = apply signal averaging to return value
-	; bit 14:	lsb - gate data averaging buffer size
-	; bit 15:	msb - gate data averaging buffer size
+	; bit 14:	0 = not crossing check gate A
+	; 			1 = check if signal crosses gate
+	; bit 15:	0 = not crossing check gate B
+	; 			1 = check if signal crosses gate
 	;
 	; Caution 1: the GATE_MAX_MIN bit in the gate flag above matches the
-    ;            GATE_MAX_MIN flag position in the gate results buffer
+	;            GATE_MAX_MIN flag position in the gate results buffer
 	;            flags below so that the bit can easily be copied from the
-    ;            former to the latter before sending peak data to the host
+	;            former to the latter before sending peak data to the host
 	;			 DO NOT MOVE without adjusting all code as necessary.
+	;
+	; Bit assignments for the Gate Extended Function flags:
+	;
+	; bit 0 :	0 = gate uses FIR filter 0 (see note below)
+	; 			1 = gate uses FIR filter 1
+	; bit 1 :	0 =
+	;			1 =
+	; bit 2 :	0 =
+	;			1 =
+	; bit 3:	0 =
+	;			1 =
+	; bit 4:	0 =
+	;			1 =
+	; bit 5:	0 =
+	;			1 =
+	; bit 6:	0 =
+	;			1 =
+	; bit 7:	0 =
+	;			1 =
+	; bit 8:	0 =
+	;			1 =
+	; bit 9:	0 =
+	;			1 =
+	; bit 10:	0 =
+	;			1 =
+	; bit 11: 	0 =
+	;			1 =
+	; bit 12:	0 =
+	;			1 =
+	; bit 13:	0 =
+	;			1 =
+	; bit 14:	0 =
+	; 			1 =
+	; bit 15:	0 =
+	; 			1 =
+	;
+	; FIR Filter Notes
+	;
+	; Filter 0 is applied to the entire signal for all gates, so no extra processing required
+	; If gate is set to use Filter 1, the data for that gate is re-filtered with Filter 1
 	;
 
 	.bss	gateBuffer, GATE_PARAMS_SIZE * 10;
@@ -720,8 +788,10 @@ DSP_ACKNOWLEDGE						.equ	127
 	;---------------------------------------------------------------------------------
 	; FIR Filter Buffer
 	;
-	; Convolution buffer for the FIR filter. Add 1 to account for the value shifted
+	; Convolution buffer for the FIR filters. Add 1 to account for the value shifted
 	; out the bottom of the buffer during each convolution.
+	;
+	; Shared by Filter 0 and Filter 1.
 	;
 	
 	.bss	firBuffer, MAX_NUM_COEFFS + 1
@@ -807,11 +877,13 @@ example .usect "varpage2", 2
 
 Data	.word	55aah			; used to mark the first page of data
 
-; coeffs1 is the list of coefficients for the signal FIR filter
+; coeffsX are the lists of coefficients for signal FIR filters 0 and 1
 ; 32 words are reserved to allow 8 packets of 4 words each to be stored
 ; these values are replaced by the program with values sent from the host
 ; the values are overwritten using a DMA channel, the only way to write to
 ; program memory
+
+coeffs0	.word	55h,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0aah
 
 coeffs1	.word	55h,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0aah
 
@@ -1587,7 +1659,7 @@ $1:	ldu     *AR3+%, A               ; reload core ID from packet
 	ldm     AR3, A                  ; save the buffer pointer which now points
 	stl     A, serialPortInBufPtr   ; to next packet
 
-	mar	*+AR3(-12)%					; point back to packet ID
+	mar		*+AR3(-12)%				; point back to packet ID
 
 	; process the packet
 
@@ -1647,9 +1719,6 @@ $1:	ldu     *AR3+%, A               ; reload core ID from packet
 
 	sub     #DSP_SET_RECTIFICATION, 0, A, B
 	bc      setRectification, BEQ
-
-	sub     #DSP_SET_FILTER_ABS_PREPROCESSING, 0, A, B
-	bc      setFilterABSPreProcessing, BEQ
 
 	sub     #DSP_GET_MAP_BLOCK_CMD, 0, A, B
 	bc      getMapBlock, BEQ
@@ -2499,23 +2568,10 @@ $6:	stm     DMDST3, DMSA            ; set destination address to position of fir
 ;-----------------------------------------------------------------------------
 
 ;-----------------------------------------------------------------------------
-; setFilterABSPreProcessing
+; setFilterPreProcessing
 ;
-; Enables or disables code which takes the absolute value of each raw sample
-; before it is processed by the digital filter.
-;
-; If AR3 points to the packet size byte, call setFilterABSPreProcessing and
-; it will be skipped and the state byte loaded next.
-; If A register already contains the state byte, call setFilterABSPreProcessing2
-; instead.
-;
-; Note: the function handleSetFilterCommand will set the mode when the filter
-; is changed. This function is a convenience method for directly setting the mode.
-;
-; State is set by the first data byte of the received packet:
-;
-; 0 = absolute value not performed
-; 1 = absolute value performed
+; Installs code which takes the absolute value or other math function of each
+; raw sample before being processed by the digital filter.
 ;
 ; The code is modified to change an instruction in the filter processing
 ; loop to perform the operation or a nop instead.  The code modification is
@@ -2525,23 +2581,25 @@ $6:	stm     DMDST3, DMSA            ; set destination address to position of fir
 ; See the notes in the header for setRectification function for details on
 ; how the code modification is performed.
 ;
-; On entry, AR3 should be pointing to word 2 (received packet data size) of
-; the received packet.
+; On entry:
+;
+; DP register should point to Variables1 page
+; A register should contain the preprocessing mode byte:
+;	0 = no preprocessing performed
+;	1 = absolute value performed
+; 	... future use
+;
+; On exit:
+;
+; DP register will point to Variables1 page
 ;
 
-setFilterABSPreProcessing:
-
-	mar     *AR3+%                  ; skip past the packet size byte
-	ld      *AR3+%, A               ; get control byte
-
-setFilterABSPreProcessing2:
-
-	ld      #Variables1, DP
+setFilterPreProcessing:
 
 	bitf	coreID, #01h			; check core, only A or C can modify, exit if B or D
-	bc		sendACK, NTC			; core id = 1/2/3/4, B&D will have bit 0 cleared
+	rc		NTC						; core id = 1/2/3/4 (ABCD), B&D will have bit 0 cleared
 
-; choose the appropriate instruction code for the specified processing
+	; choose the appropriate instruction code for the specified processing
 
 	st      #0f495h, dma3Source     ; opcode for NOP
 
@@ -2556,11 +2614,13 @@ setFilterABSPreProcessing2:
 	stm     #abs2, DMSDN			; instruction which needs to be changed
 	call	runAndWaitOnDMA3		; in the sample processing loop
 
-	b       sendACK                 ; send back an ACK packet
+	ld      #Variables1,DP
+
+	ret
 
 	.newblock                       ; allow re-use of $ variables
 
-; end of setFilterABSPreProcessing
+; end of setFilterPreProcessing
 ;-----------------------------------------------------------------------------
 
 ;-----------------------------------------------------------------------------
@@ -2578,7 +2638,10 @@ runAndWaitOnDMA3:
 	orm     #08h, DMPREC            ; use orm to set only the desired bit
 									; orm to memory mapped reg requires DP = 0
 
-$1:	bitf    DMPREC, #08h            ; loop until DMA disabled
+$1:	
+
+	bitf    DMPREC, #08h            ; loop until DMA disabled
+
 	bc      $1, TC                  ; AutoInit is disabled, so DMA clears this
 									; enable bit at the end of the block transfer
 	ret
@@ -2658,41 +2721,55 @@ handleResetMappingCommand:
 ;-----------------------------------------------------------------------------
 ; handleSetFilterCommand
 ;
-; Processes request from host to set the signal filter variables.
+; Processes request from host to set the signal filter variables for filter 0
+; or filter 1.
 ;
-; The first byte after the command byte is the Descriptor Code which describes
-; the values contained in the packet:
+; The filter info is sent in the first packet and the coefficients are sent
+; using multiple follow up packets.
 ;
-;  00: the packet contains the number of filter coefficients, the bit shift
-;       amount for convolution, and the preprocessing mode
-;  01: the following 8 bytes contain the first set of four coefficient words
-;  02: the following 8 bytes contain the second set of four coefficient words
-;  03: the following 8 bytes contain the third set of four coefficient words
-;  04: the following 8 bytes contain the fourth set of four coefficient words
-;  05: the following 8 bytes contain the fifth set of four coefficient words
-;  06: the following 8 bytes contain the sixth set of four coefficient words
-;  07: the following 8 bytes contain the seventh set of four coefficient words
-;  08: the following 8 bytes contain the eighth set of four coefficient words
+; Each channel may have multiple filters. The filter number being sent is
+; specified by the top 2 bits of the Packet Type byte (immediately after the
+; command byte in each packet):
+;
+;	NNxx xxxx  -> N bits used to specify which filter being sent
+;
+;	The first packet contains info about the filter, the remaining packets
+;	contain the filter coefficients. To specify which type of packet is being
+;	sent, the lower 6 bits of the Packet Type byte (immediately after the
+;	command byte in each packet) is used to specify:
+;
+;	xxNN NNNN    -> N bits specify the type of filter data packet, where N equals:
+;
+;	0: Info Packet - contains the number of filter coefficients, the bit shift
+;	     amount for convolution, and the preprocessing mode
+;	1: the following 8 bytes contain the first set of four coefficient words
+;	2: the following 8 bytes contain the second set of four coefficient words
+;	3: the following 8 bytes contain the third set of four coefficient words
+;	4: the following 8 bytes contain the fourth set of four coefficient words
+;	5: the following 8 bytes contain the fifth set of four coefficient words
+;	6: the following 8 bytes contain the sixth set of four coefficient words
+;	7: the following 8 bytes contain the seventh set of four coefficient words
+;	8: the following 8 bytes contain the eighth set of four coefficient words
 ;
 ; The number of FIR coefficients is always odd, so one or more of the words
 ; in the last set sent will be ignored. The DSP uses the number of coefficients
-; specified using the 00 descriptor. It is not necessary to send 8 sets if
-; there are fewer coefficients.
+; specified in the info packet. It is not necessary to send 8 sets if there are
+; fewer coefficients.
 ;
 ; If not zero, the Descriptor Code is used to determine where in the coefficients
 ; list the values in the packet should be placed. If the Code is greater than
 ; MAX_COEFF_BLOCK_NUM, the values will be ignored and not placed in the list.
 ;
-; After each FIR filter convolution performed in the DSP, the result is right
-; shifted by the amount specified in the packet sent with 00 Descriptor Code.
+; After each FIR filter convolution is performed in the DSP, the result is right
+; shifted by the amount specified in the info packet.
 ;
 ; The number of coefficients should not be more than MAX_NUM_COEFFS.
 ;   If received value is greater, will be limited to the max.
-; The number of bits to shift should be in the range –16 <= ASM <= 15.
-;	If received value is greater, an unpredictable shift will be applied.
+; The number of bits to shift should be in the range ?16 <= ASM <= 15.
+;	If received value is invalid, an unpredictable shift will be applied.
 ;
 ; If the filter array is empty (a single element set to zero), the array size
-; zero will be sent with a zero bit shift value. In such case, no coefficients
+; zero will be specified with a zero bit shift value. In such case, no coefficients
 ; will be sent -- the existing ones will be ignored.
 ;
 ; The coefficients are stored in program memory as the MACD opcode expects them
@@ -2728,40 +2805,64 @@ handleSetFilterCommand:
 
 	mar     *AR3+%                  ; skip past the packet size byte
 
-	ld      *AR3+%, A               ; get packet Descriptor Code
-	bc      $2, ANEQ                ; check for code 0, skip if not
+	ld      *AR3, A					; get packet Descriptor Code
+									; no % circular buffer modifier if not modifying AR*
+	sftl	A,-6					; shift filter number bits to 2 lsbs
+									; upper bits filled with zeros
 
+	bc      $1, ANEQ                ; check for filter 0, skip if not
 
-	; handle Descriptor Code 0 by storing number of coefficients and
-	; the right shift scale value
+	stm     #numCoeffs0, AR4    	; point to start of filter 0 variables
+	ld		#coeffs0, B				; save pointer to filter 0 coefficients list
+	stl		B, scratch2
+
+	b		$2
+
+$1:
+
+	stm     #numCoeffs1, AR4    	; point to start of filter 1 variables
+	ld		#coeffs1, B				; save pointer to filter 1 coefficients list
+	stl		B, scratch2
+
+$2:
+
+	ld      *AR3+%, A               ; get packet Descriptor Code again
+	and		#0x003f,A				; mask off upper 2 bits of byte (filter number)
+
+	bc      $4, ANEQ                ; check for code 0, if not then skip to save coefficients
+
+	; handle Descriptor Code 0 by storing filter info
 	
-	ld      *AR3+%, A               ; get number of coefficients
+	ld      *AR3+%, A               	; get number of coefficients
 	
 	sub     #MAX_NUM_COEFFS, 0, A, B    ; check if A > MAX (B=A-MAX_NUM_COEFFS)
-	bc      $1, BLEQ            		; A<=0 if A was not over max
+	bc      $3, BLEQ            		; A<=0 if A was not over max
 	ld      #MAX_NUM_COEFFS, A			; limit to max
 
-$1:	stl     A, numCoeffs			; store value
-	sub		#1, A					; subtract one for use as FIR repeat counter
-	stl		A, numFIRLoops
+$3:	stl     A, *AR4+					; store in numCoeffsX
+	sub		#1, A						; subtract one for use as FIR repeat counter
+	stl		A, *AR4- 					; store in numFIRLoopsX
 
 	;calculate the ending address of the FIR filter buffer based on the number
 	;of coefficients -- 0 coeffs no problem as filter won't be run in that case
 
-	ld		numCoeffs, A
+	ld		*AR4, A						; load numCoeffsX again
 	add     #firBuffer, A
 	sub     #1, A
-	stl		A, firBufferEnd
+	mar     *+AR4(2)                	; skip to firBufferEndX
+	stl		A, *AR4+					; store in firBufferEndX
 
-	ld      *AR3+%, 8, A            ; get filter output scaling value
-	stl     A, filterScale			; this upshift/downshift used to set sign
-	ld		filterScale, A			;   properly from byte to word
-	stl		A, -8, filterScale
+	ld      *AR3+%, 8, A            	; get filter output scaling value
+	stl     A, *AR4						; this upshift/downshift used to set sign
+	ld		*AR4, A						;   properly from byte to word
+	stl		A, -8, *AR4+				; store signed-extended value in filterScaleX
 
 	ld      *AR3+%, A					; get filter preprocessing mode
-	b		setFilterABSPreProcessing2	; no need to skip AR3 past end of packet as
-										; readSerialPort uses its own pointer
-$2:
+	stl     A, *AR4						; this upshift/downshift used to set sign
+
+	b       sendACK                 ; send back an ACK packet
+
+$4:
 
 	bitf	coreID, #01h			; check core, only A or C can modify coefficient table
 	bc		sendACK, NTC			; core id = 1/2/3/4, B&D will have bit 0 cleared so exit
@@ -2770,14 +2871,14 @@ $2:
 	; into the list in program memory
 
 	sub     #MAX_COEFF_BLOCK_NUM, 0, A, B    ; check if A > MAX (B=A-MAX_COEFF_BLOCK_NUM)
-	bc      $3, BLEQ            			 ; A<=0 if A was not over max
+	bc      $5, BLEQ            			 ; A<=0 if A was not over max
 
 	; ignore packet due to invalid Descriptor Code
 	; no need to skip AR3 past end of packet as readSerialPort uses its own pointer
 
 	b       sendACK                 ; send back an ACK packet
 
-$3:
+$5:
 
 	; store the values in the packet in the coefficients list
 
@@ -2788,10 +2889,8 @@ $3:
 	sub     #1, A					; packet #1 is zeroeth offset
 	stl     A, scratch1             ; save to multiply by T register
 	mpyu    scratch1, A             ; A = num coeffs in group x group number (in T)
-	ld		#coeffs1, B		
-	stl		B, scratch2				; save reload as unsigned to avoid sign extension
-	ldu		scratch2, B				;  (reset/set SXM bit requires nop for latency so actually more opcodes)
-	add		A, 0, B					; compute offset into coeffs1 table
+	ldu		scratch2, B				; load pointer to coeffs0 or coeffs1 table
+	add		A, 0, B					; compute offset into coeffsX table
 
 	ld		#4, A					; packet has 4 words (8 bytes) to transfer
 									; B contains the destination
@@ -3011,7 +3110,7 @@ $1:	stl     A, aScanChunk           ; used to count input data points
 ; the received packet.
 ;
 
-setGate:        ; call here to set Gate info
+setGate:		; call here to set Gate info   
 
 	mar     *AR3+%                  ; skip past the packet size byte
 	ld      *AR3+%, A               ; load the gate index number
@@ -3055,54 +3154,44 @@ $1:
 ;-----------------------------------------------------------------------------
 
 ;-----------------------------------------------------------------------------
-; setGateFlags / setDACFlags
+; setGateFlags
 ;
-; Sets the function flags for a gate or DAC section.  The first byte in the
-; packet specifies the gate/section to be modified (0-9), the next two bytes
-; specify the function flags (MSB first).
+; Sets the function flags for a gate.  The first byte in the packet specifies
+; the gate to be modified (0-9), the next two bytes specify the extended
+; function flags (MSB first), the following two bytes specify the gate
+; function flags (MSB first).
 ;
-; NOTE: setGate/setDAC should be called first as this function may use
-; values stored by those functions.
+; NOTE: setGate should be called first as this function may use values stored
+; by those functions.
 ;
 ; If the gate is flagged as an interface, wall start, or wall end, the index
-; will be saved in a variable appropriate for each type.  If more than one
-; gate is flagged as one of the above, then the last gate flagged will
-; be stored.
+; will be saved in associated variables later used for processing those types.
+; If more than one gate is flagged as one of the above, then the last gate
+; flagged will be stored.
 ;
 ; If the gate is flagged as wall start or wall end, the gate level, gate
 ; info pointer, and gate results pointer will be stored in variables for
 ; quick access during processing.
 ;
 
-setGateFlags:		; call here to set Gate function flags
+setGateFlags:
 
 	mar     *AR3+%                  ; skip past the packet size byte
 	ld      *AR3+%, A               ; load the gate index number
 	call    pointToGateInfo         ; point AR2 to info for gate in A
 
-	b       $1
+	ld      *AR3+%, 8, A            ; get high byte of extended function flags
+	adds    *AR3+%, A               ; add in low byte
+	stl     A, *AR2(11)             ; store the flags
 
-setDACFlags:            ; call here to set DAC function flags
+	ld      *AR3+%, 8, A            ; get high byte of function flags
+	adds    *AR3+%, A               ; add in low byte
+	stl     A, *AR2                 ; store the flags
 
-	mar     *AR3+%                  ; skip past the packet size byte
-	ld      *AR3+%, A               ; load the gate index number
-	call    pointToDACInfo          ; point AR2 to info for DAC in A
-
-$1:	ld      *AR3+%, 8, A            ; get high byte
-	adds    *AR3-%, A               ; add in low byte
-	stl     A, *AR2                 ; store the gate flags
-
-	mar     *AR3-%                  ; move back to index number
-	ld      *AR3, A                 ; reload the gate index number
+	mar		*+AR3(-5)%   	        ; move back to gate index number
+	ld      *AR3, A                 ; and load
 									; don't use % (circular buffer) token here as
 									; it is not needed if not inc/decrementing
-
-        ;NOTE:  the following is being done for Gate flags and DAC gate flags.
-        ;       it only makes sense for Gate flags. Since most DAC flags are
-        ;       currently zeroed (right?), the following should be ignored for DAC.
-        ;       If these DAC flags are ever to be used, the function needs to be
-        ;       separated for Gate and DAC Gate flag setting else the following
-        ;       will cause problems.
 
 	bitf	*AR2, #GATE_FOR_INTERFACE   ; check if this is the interface gate
 	bc      $2, NTC
@@ -3161,7 +3250,35 @@ $4:	b       sendACK                 ; send back an ACK packet
 
 	.newblock                       ; allow re-use of $ variables
 
-; end of setGateFlags / setDACFlags
+; end of setGateFlags
+;-----------------------------------------------------------------------------
+
+;-----------------------------------------------------------------------------
+; setDACFlags
+;
+; Sets the function flags for a DAC section.  The first byte in the
+; packet specifies the section to be modified (0-9), the next two bytes
+; specify the function flags (MSB first).
+;
+; NOTE: setDAC should be called first as this function may use values stored
+; by those functions.
+;
+
+setDACFlags:
+
+	mar     *AR3+%                  ; skip past the packet size byte
+	ld      *AR3+%, A               ; load the gate index number
+	call    pointToDACInfo          ; point AR2 to info for DAC in A
+
+	ld      *AR3+%, 8, A            ; get high byte
+	adds    *AR3-%, A               ; add in low byte
+	stl     A, *AR2                 ; store the gate flags
+
+	b       sendACK                 ; send back an ACK packet
+
+	.newblock                       ; allow re-use of $ variables
+
+; end of setDACFlags
 ;-----------------------------------------------------------------------------
 
 ;-----------------------------------------------------------------------------
@@ -3646,7 +3763,7 @@ $5:
 ; sets).
 ;
 ; The number of sets to average (buffer size) is transferred from the host
-; in the upper most two bits of the gate's flags.
+; in the upper most two bits of the gate's flags. MKS -- no longer true!!!! those bits used for something else now!!!
 ;
 ; The counter tracking which buffer was filled last time is stored in the upper
 ; most two bits of the gate's ID number.
@@ -5242,6 +5359,20 @@ $8:	banz    $2, *AR5-               ; decrement DAC gate index pointer
 ; or non-tracking) are processed if no crossing found in an active interface
 ; gate.
 ;
+; Some configurations use two gates per reflection; one is a lower gate used
+; to catch the signal crossing edge for measurement purposes, the second is a
+; higher crossing check gate used to determine if the signal reached a specified
+; height...if not then the wall measurement is ignored. Each reflection can use a
+; cross check gate or not...one, two or neither. These extra gates are used to
+; avoid measuring at the top of the reflection when it drops in height such that
+; the crossing point is near the peak for the measurement gate. In such case, the
+; peak is often distorted and unusable for measurement.
+;
+; On program start, processingFlags1.CROSSED_GATE_A and processingFlags1.
+; CROSSED_GATE_A are preset. If either Crossing Check gate is not present, then
+; it's associated flag will never be cleared so it will always show as being crossed
+; and will have no effect.
+;
 
 processGates:
 
@@ -5309,6 +5440,14 @@ $2:	ldm     AR5, A                  ; use loop count as gate index
 
 	bc      $8, AEQ					; skip to next gate if current gate was handled
 									; as a wall gate by processWallGates
+
+	pshm    AR2						; save gate info pointer
+	call    processCrossCheckGates	; if this is a Crossing Check gate, handle accordingly
+	popm    AR2                     ; restore gate info pointer
+	nop                             ; pipeline protection
+
+	bc      $8, AEQ					; skip to next gate if current gate was handled
+									; as a Crossing Check gate
 
 	bitf    *AR2, #GATE_FIND_PEAK   ; find peak if bit set
 	bc      $5, NTC
@@ -5380,16 +5519,23 @@ $9:	; Check if Wall readings need to be processed.
 	cc      storeWallValueInMapBuffer, TC
 
 	; check to see if the interface was found, the first wall reflection was
-	; found, and the second wall reflection was found
+	; found, and the second wall reflection was found, and if the crossing
+	; check gates were exceeded (see notes at top of this function)
 	; exit if any were missed - the signal will be ignored
 
-	bitf    processingFlags1, #IFACE_FOUND          ; interface check
+	bitf    processingFlags1, #IFACE_FOUND          ; interface test
 	rc      NTC
 
-	bitf    processingFlags1, #WALL_START_FOUND     ; first reflection check
+	bitf    processingFlags1, #WALL_START_FOUND     ; first reflection test
 	rc      NTC
 
-	bitf    processingFlags1, #WALL_END_FOUND       ; second reflection check
+	bitf    processingFlags1, #WALL_END_FOUND       ; second reflection test
+	rc      NTC
+
+	bitf    processingFlags1, #CROSSED_GATE_A       ; first cross check gate test
+	rc      NTC
+
+	bitf    processingFlags1, #CROSSED_GATE_B       ; second cross check gate test
 	rc      NTC
 
 	b       processWall                     ; calculate the wall thickness
@@ -5412,6 +5558,9 @@ $9:	; Check if Wall readings need to be processed.
 ; gates for the DSP code to function properly for wall measurement. Hence, all
 ; wall gates are forced to be MAX gates in this function. The DSP's peak
 ; trapping code for wall ignores the gates' MIN/MAX flag.
+;
+; On entry:
+; AR2 should point to the flags entry for the gate.
 ;
 ; On exit:
 ; If the gate is a Wall start or end gate, the A register returns 0 to signal
@@ -5507,6 +5656,69 @@ processWallGate:
 	.newblock					; allow re-use of $ variables
 
 ; end of processWallGate
+;-----------------------------------------------------------------------------
+
+;-----------------------------------------------------------------------------
+; processCrossCheckGates
+;
+; If the gate is Cross Check Gate A or B, it is processed accordingly.
+; If not, does nothing.
+;
+; On entry:
+; AR2 should point to the flags entry for the gate.
+;
+; On exit:
+; If the gate is Cross Check Gate A or B, the A register returns 0 to signal
+; that the gate was handled in this function. Otherwise, A register returns -1.
+;
+
+processCrossCheckGates:
+
+	bitf    *AR2, #GATE_CHECK_FOR_CROSSING_A  ; find crossing if Crossing Check gate A
+	bc      $3, NTC
+
+	call	findGateCrossing
+
+	andm    #~CROSSED_GATE_A, processingFlags1 ; clear the found flag
+
+	xc      2, AEQ                  ; if A returned 0 from function call,
+									; set the found flag -- crossing found
+									; xc 2,AEQ only skips the next instruction
+									;  since it is a two-word opcode
+
+	orm     #CROSSED_GATE_A, processingFlags1
+
+	ld      #0, A                   ; return 0 - gate was handled as a Crossing Check gate
+
+	ret
+
+$3:	bitf	*AR2, #GATE_CHECK_FOR_CROSSING_B	; find crossing if Crossing Check gate B
+	bc      $4, NTC
+
+	call	findGateCrossing
+
+	andm    #~CROSSED_GATE_B, processingFlags1 ; clear the found flag
+
+	xc      2, AEQ                  ; if A returned 0 from function call,
+									; set the found flag -- crossing found
+									; xc 2,AEQ only skips the next instruction
+									;  since it is a two-word opcode
+
+	orm     #CROSSED_GATE_B, processingFlags1
+
+	ld      #0, A                   ; return 0 - gate was handled as a Crossing Check gate
+
+	ret
+
+$4:
+
+	ld      #-1, A                  ; return -1 as gate was not a Crossing Check gate
+
+	ret
+
+	.newblock					; allow re-use of $ variables
+
+; end of processCrossCheckGates
 ;-----------------------------------------------------------------------------
 
 ;-----------------------------------------------------------------------------
@@ -5816,13 +6028,14 @@ $2:	add     #2, B                   ; increment the flag by 2 (each DSP gets eve
 	; split each word into one two-byte samples (the FPGA packs two samples
 	; into each word)
 
-	; process without filtering if filter has zero coefficients, filter otherwise
+	; process without filtering if filter 0 has zero coefficients, otherwise
+	;  filter 0 is applied to the entire signal
 
-	ld		numCoeffs, A
+	ld		numCoeffs0, A
 	cc		processSamplesWithoutFilter, AEQ
 
-	ld		numCoeffs, A
-	cc		processSamplesWithFilter, ANEQ
+	ld		numCoeffs0, A
+	cc		processSamplesWithFilter0, ANEQ
 
 	bitf    flags1, #GATES_ENABLED      ; process gates if they are enabled
 	cc      processGates, TC            ; also processes the DAC
@@ -5862,8 +6075,8 @@ processSamplesWithoutFilter:
 rect1:
 	nop                             ; this nop gets replaced with an instruction
 									; which performs the desired rectification
-									;  nop for positive half and RF, neg for
-									; negative half, abs for full
+									; NOP for positive half and RF, NEG A for
+									; negative half, ABS A for full wave
 
 	st      A, *AR3+                ; shift right by 24 (using ASM) and store
 	|| ld   *AR2+, A                ; reload the same pair again to process
@@ -5880,8 +6093,8 @@ rect1:
 rect2:
 	nop                             ; this nop gets replaced with an instruction
 									; which performs the desired rectification
-									;  nop for positive half and RF, neg for
-									; negative half, abs for full
+									; NOP for positive half and RF, NEG A for
+									; negative half, ABS A for full wave
 
 $1:
 	st      A, *AR3+                ; shift right by 24 (using ASM) and store
@@ -5899,22 +6112,91 @@ $1:
 ;-----------------------------------------------------------------------------
 
 ;-----------------------------------------------------------------------------
+; processSamplesWithFilter0
+;
+; Processes a portion of the input sample buffer with filter 0 after installing
+; the code to apply the pre-processing math specified for that filter.
+;
+; On Entry:
+;
+; DP should point at Variables1 page
+; BRC register should contain the number-1 of input sample words to process
+;   (each sample word contains two samples which are 1 byte each)
+; AR2 should point to first word of input sample buffer
+; AR3 should point to first word of output buffer
+;
+
+processSamplesWithFilter0:
+
+	ld		filterPreProcessMode0, A
+	call	setFilterPreProcessing
+
+	ld		filterScale0, ASM		; get number of bits to right-shift filter output
+
+	b		processSamplesWithFilter
+
+	.newblock
+
+; end of processSamplesWithFilter0
+;-----------------------------------------------------------------------------
+
+;-----------------------------------------------------------------------------
+; processSamplesInGateWithFilter1
+;
+; Processes data in specified gate with filter 1 after installing the code to
+; apply the pre-processing math specified for that filter.
+;
+; On entry:
+;
+; DP register should point to Variables1 page
+; AR2 should point to flags entry of gate to be processed
+;
+
+processSamplesInGateWithFilter1:
+
+;debug mks -- next two lines need to be fixed
+;need to find spot in sample buffer associated with start of gate
+;need to store data at area in processed buffer delineated by the gate
+
+	stm     #FPGA_AD_SAMPLE_BUFFER, AR2     ; point to start of input data buffer
+	stm     #PROCESSED_SAMPLE_BUFFER, AR3   ; point to start of output data buffer
+
+	ld      adSamplePackedSize, A   		; width of gate is number of samples
+	sub     #1, A                   		; block repeat uses count-1
+	stlm    A, BRC                  		; buffer has two samples per word
+
+	ld		filterPreProcessMode1, A
+	call	setFilterPreProcessing
+
+	ld		filterScale1, ASM		; get number of bits to right-shift filter output
+
+	b	processSamplesWithFilter
+
+	.newblock
+
+; end of processSamplesInGateWithFilter1
+;-----------------------------------------------------------------------------
+
+;-----------------------------------------------------------------------------
 ; processSamplesWithFilter
 ;
 ; Extracts each dual-byte stuffed word into two samples and runs each sample
 ; through a FIR filter before storing in the processed signal buffer.
 ;
-; On entry, DP should point at Variables1 page.
+; On entry:
+;
+; DP should point at Variables1 page.
+; ASM register should contain the filterScale for the filter
+; BRC register should contain the number-1 of input sample words to process
+;   (each sample word contains two samples which are 1 byte each)
+; AR2 should point to first word of input sample buffer
+; AR3 should point to first word of output buffer
 ;
 
 processSamplesWithFilter:
 
 	ld		#firBuffer, A			; save in AR1 for quick access without modifying DP
 	stlm	A, AR1
-
-	ld      #Variables1, DP
-
-	ld		filterScale, ASM		; get number of bits to right-shift filter output to fit into a word
 
 ; start of transfer block
 
@@ -5927,22 +6209,22 @@ processSamplesWithFilter:
 
 abs1:
 	nop								; this opcode gets replaced with other codes as specified
-									; by the host for filter pre-processing, such as ABS
+									; by the host for filter pre-processing, such as ABS B
 
 	stl		B, *AR1					; store first byte at top of filter buffer for filtering
 
-	ld		firBufferEnd, A			; convolution start point (from bottom of buffer)
+	ld		firBufferEnd0, A		; convolution start point (from bottom of buffer)
 	stlm	A, AR0
 	ld      #00h, A					; clear for summing in MACD
 
-	rpt		numFIRLoops				; FIR filter convolution
-	macd	*AR0-, coeffs1, A
+	rpt		numFIRLoops0			; FIR filter convolution
+	macd	*AR0-, coeffs0, A
 
 rect3:
 	nop                             ; this nop gets replaced with an instruction
 									; which performs the desired rectification
-									;  nop for positive half and RF, neg for
-									; negative half, abs for full
+									; NOP for positive half and RF, NEG A for
+									; negative half, ABS A for full wave
 
 	stl		A, ASM, *AR3+			; store filter output in the processed buffer
 									; result is shifted by ASM bits
@@ -5961,22 +6243,22 @@ rect3:
 
 abs2:
 	nop								; this opcode gets replaced with other codes as specified
-									; by the host for filter pre-processing, such as ABS
+									; by the host for filter pre-processing, such as ABS B
 
 	stl		B, *AR1					; save second byte at top of filter buffer for filtering
 
-	ld		firBufferEnd, A			; convolution start point (from bottom of buffer)
+	ld		firBufferEnd0, A		; convolution start point (from bottom of buffer)
 	stlm	A, AR0
 	ld      #00h, A					; clear for summing in MACD
 
-	rpt		numFIRLoops				; FIR filter convolution
-	macd	*AR0-, coeffs1, A
+	rpt		numFIRLoops0			; FIR filter convolution
+	macd	*AR0-, coeffs0, A
 
 rect4:
 	nop                             ; this nop gets replaced with an instruction
 									; which performs the desired rectification
-									;  nop for positive half and RF, neg for
-									; negative half, abs for full
+									; NOP for positive half and RF, NEG A for
+									; negative half, ABS A for full wave
 
 $1:	stl		A, ASM, *AR3+			; store filter output in the processed buffer
 									; result is shifted by ASM bits
@@ -6187,10 +6469,17 @@ main:
 	st      #00h, frameCountFlag
 	st      #00h, processingFlags1
 	st      #00h, heartBeat
+	st      #00h, debugVar
 	st      #00h, freeTimeCnt1
 	st      #00h, freeTimeCnt0
-	st		#00h, numCoeffs
-	st		#firBuffer+MAX_NUM_COEFFS-1, firBufferEnd
+	st		#00h, numCoeffs0
+	st		#00h, numCoeffs1
+	st		#firBuffer+MAX_NUM_COEFFS-1, firBufferEnd0
+	st		#firBuffer+MAX_NUM_COEFFS-1, firBufferEnd1
+
+	; preset -- see notes at top of processGates for details
+	orm     #CROSSED_GATE_A, processingFlags1
+	orm     #CROSSED_GATE_B, processingFlags1
 
 	st      #0ffffh, interfaceGateIndex     ; default to no gate index set
 	st      #0ffffh, wallStartGateIndex     ; default to no gate index set
