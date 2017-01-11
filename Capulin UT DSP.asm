@@ -311,6 +311,7 @@ DSP_GET_MAP_BLOCK_CMD				.equ	18
 DSP_GET_MAP_COUNT_CMD				.equ	19
 DSP_RESET_MAPPING_CMD				.equ	20
 DSP_SET_FILTER_CMD					.equ	21
+DSP_SET_FILTER_ABS_PREPROCESSING	.equ	22
 
 DSP_ACKNOWLEDGE						.equ	127
 
@@ -402,12 +403,10 @@ DSP_ACKNOWLEDGE						.equ	127
 	.bss	numFIRLoops0,1			; one less than numCoeffsX to work with repeat opcode
 	.bss	firBufferEnd0,1			; last position of FIR buffer 0 (based on number of coefficients)
 	.bss	filterScale0,1			; scaling for FIR filter 0 output (number of bits to right shift)
-	.bss	filterPreProcessMode0,1	; pre-processing mode for filter 0 (none, abs val, etc.)
 	.bss	numCoeffs1,1			; number of coefficients for FIR filter 1
 	.bss	numFIRLoops1,1			; one less than numCoeffsX to work with repeat opcode
 	.bss	firBufferEnd1,1			; last position of FIR buffer 1 (based on number of coefficients)
 	.bss	filterScale1,1			; scaling for FIR filter 1 output (number of bits to right shift)
-	.bss	filterPreProcessMode1,1	; pre-processing mode for filter 1 (none, abs val, etc.)
 
 ; NOTE: DO NOT CHANGE ORDER OF NEXT SET OF VARIABLES - END OF SECTION
 
@@ -1716,6 +1715,9 @@ $1:	ldu     *AR3+%, A               ; reload core ID from packet
 	sub     #DSP_SET_RECTIFICATION, 0, A, B
 	bc      setRectification, BEQ
 
+	sub     #DSP_SET_FILTER_ABS_PREPROCESSING, 0, A, B
+	bc      setFilterABSPreProcessing, BEQ
+
 	sub     #DSP_GET_MAP_BLOCK_CMD, 0, A, B
 	bc      getMapBlock, BEQ
 
@@ -2564,17 +2566,23 @@ $6:	stm     DMDST3, DMSA            ; set destination address to position of fir
 ;-----------------------------------------------------------------------------
 
 ;-----------------------------------------------------------------------------
-; setFilterPreProcessing
+; setFilterABSPreProcessing
 ;
-; Installs code which takes the absolute value or other math function of each
-; raw sample before being processed by the digital filter.
+; Enables or disables code which takes the absolute value of each raw sample
+; before it is processed by the digital filter.
 ;
-; On entry, DP register should point to Variables1 page and A register should
-; contain the preprocessing mode byte:
+; If AR3 points to the packet size byte, call setFilterABSPreProcessing and
+; it will be skipped and the state byte loaded next.
+; If A register already contains the state byte, call setFilterABSPreProcessing2
+; instead.
 ;
-; 0 = no preprocessing performed
+; Note: the function handleSetFilterCommand will set the mode when the filter
+; is changed. This function is a convenience method for directly setting the mode.
+;
+; State is set by the first data byte of the received packet:
+;
+; 0 = absolute value not performed
 ; 1 = absolute value performed
-; ... future use
 ;
 ; The code is modified to change an instruction in the filter processing
 ; loop to perform the operation or a nop instead.  The code modification is
@@ -2584,13 +2592,23 @@ $6:	stm     DMDST3, DMSA            ; set destination address to position of fir
 ; See the notes in the header for setRectification function for details on
 ; how the code modification is performed.
 ;
+; On entry, AR3 should be pointing to word 2 (received packet data size) of
+; the received packet.
+;
 
-setFilterPreProcessing:
+setFilterABSPreProcessing:
+
+	mar     *AR3+%                  ; skip past the packet size byte
+	ld      *AR3+%, A               ; get control byte
+
+setFilterABSPreProcessing2:
+
+	ld      #Variables1, DP
 
 	bitf	coreID, #01h			; check core, only A or C can modify, exit if B or D
-	rc		NTC						; core id = 1/2/3/4 (ABCD), B&D will have bit 0 cleared
+	bc		sendACK, NTC			; core id = 1/2/3/4, B&D will have bit 0 cleared
 
-	; choose the appropriate instruction code for the specified processing
+; choose the appropriate instruction code for the specified processing
 
 	st      #0f495h, dma3Source     ; opcode for NOP
 
@@ -2605,11 +2623,11 @@ setFilterPreProcessing:
 	stm     #abs2, DMSDN			; instruction which needs to be changed
 	call	runAndWaitOnDMA3		; in the sample processing loop
 
-	ret
+	b       sendACK                 ; send back an ACK packet
 
 	.newblock                       ; allow re-use of $ variables
 
-; end of setFilterPreProcessing
+; end of setFilterABSPreProcessing
 ;-----------------------------------------------------------------------------
 
 ;-----------------------------------------------------------------------------
@@ -2851,18 +2869,17 @@ $3:	stl     A, *AR4+					; store in numCoeffsX
 	ld		*AR4, A						; load numCoeffsX again
 	add     #firBuffer, A
 	sub     #1, A
-	mar     *+AR4(2)                	; skip to firBufferEndX
-	stl		A, *AR4+					; store in firBufferEndX
+	stl		A, *+AR4(2)					; store in firBufferEndX
 
 	ld      *AR3+%, 8, A            	; get filter output scaling value
-	stl     A, *AR4						; this upshift/downshift used to set sign
+	stl     A, *+AR4(1)					; this upshift/downshift used to set sign
 	ld		*AR4, A						;   properly from byte to word
-	stl		A, -8, *AR4+				; store signed-extended value in filterScaleX
+	stl		A, -8, *AR4					; store signed-extended value in filterScaleX
 
 	ld      *AR3+%, A					; get filter preprocessing mode
-	stl     A, *AR4						; this upshift/downshift used to set sign
 
-	ret
+	b		setFilterABSPreProcessing2	; no need to skip AR3 past end of packet as
+										; readSerialPort uses its own pointer
 
 $4:
 
@@ -6007,14 +6024,14 @@ $2:	add     #2, B                   ; increment the flag by 2 (each DSP gets eve
 	; split each word into one two-byte samples (the FPGA packs two samples
 	; into each word)
 
-	; process without filtering if filter 0 has zero coefficients, otherwise
-	;  filter 0 is applied to the entire signal
+	; process without filtering if filter 0 has zero coefficients, filter otherwise
+	; filter 0 is applied to the entire signal
 
 	ld		numCoeffs0, A
 	cc		processSamplesWithoutFilter, AEQ
 
 	ld		numCoeffs0, A
-	cc		processSamplesWithFilter0, ANEQ
+	cc		processSamplesWithFilter, ANEQ
 
 	bitf    flags1, #GATES_ENABLED      ; process gates if they are enabled
 	cc      processGates, TC            ; also processes the DAC
@@ -6091,87 +6108,22 @@ $1:
 ;-----------------------------------------------------------------------------
 
 ;-----------------------------------------------------------------------------
-; processSamplesWithFilter0
-;
-; Processes a portion of the input sample buffer with filter 0 after installing
-; the code to apply the pre-processing math specified for that filter.
-;
-; On Entry:
-;
-; DP should point at Variables1 page
-; BRC register should contain the number-1 of input sample words to process
-;   (each sample word contains two samples which are 1 byte each)
-; AR2 should point to first word of input sample buffer
-; AR3 should point to first word of output buffer
-;
-
-processSamplesWithFilter0:
-
-	ld		filterPreProcessMode0, A
-	call	setFilterPreProcessing
-
-	ld		filterScale0, ASM		; get number of bits to right-shift filter output
-
-	b	processSamplesWithFilter
-
-	.newblock
-
-; end of processSamplesWithFilter0
-;-----------------------------------------------------------------------------
-
-;-----------------------------------------------------------------------------
-; processSamplesInGateWithFilter1
-;
-; Processes data in specified gate with filter 1 after installing the code to
-; apply the pre-processing math specified for that filter.
-;
-; On entry:
-;
-; DP register should point to Variables1 page
-; AR2 should point to flags entry of gate to be processed
-;
-
-processSamplesInGAteWithFilter1:
-
-	stm     #FPGA_AD_SAMPLE_BUFFER, AR2     ; point to start of input data buffer
-	stm     #PROCESSED_SAMPLE_BUFFER, AR3   ; point to start of output data buffer
-
-	ld      adSamplePackedSize, A   		; width of gate is number of samples
-	sub     #1, A                   		; block repeat uses count-1
-	stlm    A, BRC                  		; buffer has two samples per word
-
-	ld		filterPreProcessMode1, A
-	call	setFilterPreProcessing
-
-	ld		filterScale1, ASM		; get number of bits to right-shift filter output
-
-	b	processSamplesWithFilter
-
-	.newblock
-
-; end of processSamplesInGateWithFilter1
-;-----------------------------------------------------------------------------
-
-;-----------------------------------------------------------------------------
 ; processSamplesWithFilter
 ;
 ; Extracts each dual-byte stuffed word into two samples and runs each sample
 ; through a FIR filter before storing in the processed signal buffer.
 ;
-; On entry:
-;
-; DP should point at Variables1 page.
-; ASM register should contain the filterScale for the filter
-; BRC register should contain the number-1 of input sample words to process
-;   (each sample word contains two samples which are 1 byte each)
-; AR2 should point to first word of input sample buffer
-; AR3 should point to first word of output buffer
+; On entry, DP should point at Variables1 page.
 ;
 
 processSamplesWithFilter:
 
 	ld		#firBuffer, A			; save in AR1 for quick access without modifying DP
 	stlm	A, AR1
+
+	ld      #Variables1, DP
+
+	ld		filterScale0, ASM		; get number of bits to right-shift filter output to fit into a word
 
 ; start of transfer block
 
